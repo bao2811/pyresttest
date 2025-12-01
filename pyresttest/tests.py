@@ -30,11 +30,11 @@ else:
     import urlparse
 
 # Python 3 compatibility shims
-from . import six
-from .six import binary_type
-from .six import text_type
-from .six import iteritems
-from .six.moves import filter as ifilter
+import six
+from six import binary_type
+from six import text_type
+from six import iteritems
+from six.moves import filter as ifilter
 
 """
 Pull out the Test objects and logic associated with them

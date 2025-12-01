@@ -10,8 +10,13 @@ import csv
 import logging
 import threading
 from optparse import OptionParser
+import requests
 from email import message_from_string  # For headers handling
 import time
+from .performance import run_performance_test
+from .performance_async import execute_async_performance
+
+
 
 try:
     from cStringIO import StringIO as MyIO
@@ -309,6 +314,22 @@ def read_file(path):
 def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None, *args, **kwargs):
     """ Put together test pieces: configure & run actual test, return results """
 
+    # if hasattr(mytest, 'performance') and mytest.performance:
+    #     return run_performance_test(mytest, test_config, context)
+    
+    perf = getattr(mytest, "performance", None)
+    if perf:
+        mode = perf.get("mode", "sync")
+        if mode == "async":
+            # Async performance mode
+            print(f"[Async Performance Mode] Test: {mytest.name}")
+            return execute_async_performance(mytest)
+        else:
+            # ThreadPool-based performance
+            print(f"[Sync Performance Mode] Test: {mytest.name}")
+            return run_performance_test(mytest, test_config, context)
+    
+    
     # Initialize a context if not supplied
     my_context = context
     if my_context is None:
@@ -921,3 +942,30 @@ def command_line_run(args_in):
 # Allow import into another module without executing the main method
 if(__name__ == '__main__'):
     command_line_run(sys.argv[1:])
+
+def run_single_test(test):
+    method = test.get('method', 'GET').upper()
+    url = test.get('url')
+    headers = test.get('headers', {})
+    body = test.get('body', None)
+    expected_status = test.get('expected_status', [200])
+    expected_body = test.get('expected_body', {}).get('contains', None)
+
+    start = time.time()
+    response = requests.request(method, url, headers=headers, data=body)
+    elapsed_ms = (time.time() - start) * 1000
+
+    # Kiểm tra status
+    status_ok = response.status_code in expected_status
+    # Kiểm tra body
+    body_ok = True
+    if expected_body:
+        body_ok = expected_body in response.text
+
+    passed = status_ok and body_ok
+    return {
+        'url': url,
+        'status_code': response.status_code,
+        'elapsed_ms': elapsed_ms,
+        'passed': passed
+    }

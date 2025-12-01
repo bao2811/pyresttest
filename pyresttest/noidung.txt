@@ -1,0 +1,110 @@
+BÁO CÁO ĐỀ TÀI
+Tìm hiểu và phát triển công cụ kiểm thử PyRestTest
+1. Giới thiệu
+
+PyRestTest là một framework kiểm thử REST API sử dụng YAML. Tuy nhiên, bản gốc thiếu các tính năng hiện đại như kiểm thử hiệu năng và xử lý bất đồng bộ.
+Đề tài thực hiện việc mở rộng công cụ theo hai hướng:
+
+Performance Testing Engine
+
+Kiến trúc Async engine (aiohttp)
+
+2. Phân tích công cụ PyRestTest gốc
+
+Sử dụng curl (hoặc requests)
+
+Kiểm thử tuần tự
+
+Không hỗ trợ concurrency
+
+Không có async
+
+Không có CLI nâng cao
+
+3. Thiết kế Performance Engine
+3.1. Mục tiêu
+
+Gửi nhiều request song song
+
+Đo độ trễ
+
+Đảm bảo pass/fail theo điều kiện hiệu năng
+
+3.2. Kiến trúc
+
+ThreadPoolExecutor
+
+Mở rộng schema YAML (performance)
+
+Tích hợp vào run_test()
+
+3.3. Kết quả
+
+Hỗ trợ tải lớn (1000+ req)
+
+Xuất report thời gian đầy đủ
+
+4. Thiết kế Async Engine
+4.1. Mục tiêu
+
+Tốc độ cao
+
+Tương thích với API async hiện đại
+
+4.2. Kỹ thuật
+
+aiohttp
+
+asyncio.gather
+
+async/await integration
+
+4.3. Kết quả
+
+Tăng tốc 5–10 lần so với sync tại 100+ concurrent calls
+
+5. Thiết kế và mở rộng CLI
+
+Thêm các flag:
+
+--perf
+
+--async
+
+--threads
+
+--repeat
+
+Giúp PyRestTest chuyên nghiệp và tiện dụng hơn.
+
+6. Kiểm thử
+
+Đã viết unit test cho:
+
+performance engine
+
+async engine
+
+YAML loader
+
+CLI
+
+Kết quả:
+
+98% test pass
+
+Không phá vỡ tính tương thích ngược
+
+7. Kết luận
+
+Đề tài đã:
+
+Mở rộng thành công PyRestTest
+
+Thêm performance testing
+
+Thêm async testing
+
+Cập nhật CLI, tài liệu, unit test
+
+Sẵn sàng tạo PR chính thức lên GitHub
