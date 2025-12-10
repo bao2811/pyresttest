@@ -1,0 +1,369 @@
+================================================================================
+BÁO CÁO NÂNG CẤP PYRESTTEST: TỪ CÔNG CỤ KIỂM THỬ CƠ BẢN ĐẾN KHUNG LÀM VIỆC SẴN SÀNG PRODUCTION
+================================================================================
+
+Ngày: 10/12/2025
+Tác giả: bao2811
+Repo: https://github.com/bao2811/pyresttest
+Dựa trên: PyRestTest gốc của svanoort (Apache-2.0)
+
+MỤC LỤC
+1. Executive Summary
+2. Bối cảnh & Vấn đề cần giải quyết
+3. Kiến trúc gốc của PyRestTest
+4. Nâng cấp theo giai đoạn
+   4.1 Giai đoạn 1: Performance & Async
+   4.2 Giai đoạn 2: Retry & Concurrency + API/Auto-runner
+5. Thiết kế & Thuật toán
+   5.1 Exponential Backoff & ShouldRetry
+   5.2 Concurrency (ThreadPoolExecutor & asyncio.Semaphore)
+   5.3 Chạy song song nhiều file test (đa tiến trình)
+6. Cấu hình & Cách sử dụng
+   6.1 CLI
+   6.2 YAML
+   6.3 Programmatic API
+   6.4 Auto-configured Runner (JSON)
+7. Các vấn đề đã khắc phục (so với bản gốc)
+8. Testing & Quality Gates
+9. So sánh hiệu năng & tác động
+10. Roadmap khuyến nghị
+11. Phụ lục: Bản đồ thay đổi file → chức năng
+12. Kết luận
+
+--------------------------------------------------------------------------------
+1) EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Mục tiêu nâng cấp PyRestTest là tăng độ tin cậy và linh hoạt khi kiểm thử API, đặc biệt trong bối cảnh CI/CD và benchmark tải. Kết quả:
+- Bổ sung Performance & Async để tạo workload và đo lường ổn định.
+- Thêm Retry (Exponential Backoff) và Concurrency control để giảm flakiness và tránh quá tải.
+- Cung cấp 3 kênh sử dụng: CLI, Programmatic API, Auto-runner theo JSON.
+- Giữ tương thích ngược hoàn toàn: tính năng mới là tùy chọn, không phá vỡ YAML cũ.
+
+--------------------------------------------------------------------------------
+2) BỐI CẢNH & VẤN ĐỀ CẦN GIẢI QUYẾT
+--------------------------------------------------------------------------------
+- Flaky tests do lỗi mạng tạm thời, timeout hoặc 5xx → cần Retry có chiến lược.
+- Không kiểm soát được độ đồng thời → cần Concurrency control (sync/async).
+- Khó chạy đa môi trường hoặc tích hợp sâu vào Python → cần Programmatic API + Auto-runner.
+- Thiếu benchmark native → cần Performance modules (sync/async) để đo minh bạch.
+
+--------------------------------------------------------------------------------
+3) KIẾN TRÚC GỐC CỦA PYRESTTEST (TÓM TẮT)
+--------------------------------------------------------------------------------
+- Định nghĩa test qua YAML, gồm URL/method/validators/extractors.
+- Thực thi bằng curl/requests, trả về `TestResponse` với trạng thái pass/fail.
+- Có CLI, validators/benchmarks, import test từ file khác.
+
+--------------------------------------------------------------------------------
+4) NÂNG CẤP THEO GIAI ĐOẠN
+--------------------------------------------------------------------------------
+4.1 Giai đoạn 1: Performance & Async
+- `pyresttest/performance.py`: Benchmark sync, metrics min/max/avg, threshold, connection pooling.
+- `pyresttest/performance_async.py`: Benchmark async với aiohttp, nâng throughput, không chặn I/O.
+
+4.2 Giai đoạn 2: Retry & Concurrency + API/Auto-runner
+- `pyresttest/retry.py`: RetryConfig; retry_sync/async; should_retry; tính delay backoff.
+- Tích hợp vào `resttest.py`, `performance.py`, `performance_async.py`:
+  • Thêm CLI flags: `--max-retries`, `--retry-backoff-base`, `--retry-backoff-max`, `--max-concurrency`.
+  • Truyền RetryConfig và concurrency xuống các lời gọi test/performance.
+- Programmatic API & Auto-runner:
+  • `examples/programmatic_usage.py` – ví dụ sử dụng Python API.
+  • `examples/auto_runner.py` – chạy theo JSON (`examples/test_config.json`), đa môi trường.
+- Testing & Docs:
+  • `pyresttest/test_retry.py` – 14 unit tests cho retry.
+  • `docs/retry_and_concurrency.md`, `docs/USAGE_GUIDE.md`, `examples/README.md`.
+
+--------------------------------------------------------------------------------
+5) THIẾT KẾ & THUẬT TOÁN
+--------------------------------------------------------------------------------
+5.1 Exponential Backoff & ShouldRetry
+- Delay: `delay = min(backoff_base * (2^attempt), backoff_max)`.
+- ShouldRetry: retry cho 500/502/503/504, lỗi kết nối, timeout; không retry cho 2xx/3xx/4xx (trừ khi cấu hình).
+
+5.2 Concurrency (ThreadPoolExecutor & asyncio.Semaphore)
+- Sync: giới hạn đồng thời qua `ThreadPoolExecutor(max_workers=N)`; dùng `requests.Session` để tái sử dụng kết nối.
+- Async: giới hạn đồng thời qua `asyncio.Semaphore(N)`; dùng `aiohttp.ClientSession` và `await semaphore.acquire()`.
+
+5.3 Chạy song song nhiều file test (đa tiến trình)
+- Thêm chạy song song ở cấp “file test” bằng `ProcessPoolExecutor`.
+- CLI mới: `--tests` (danh sách/glob) và `--parallel-suites` (số tiến trình).
+- Cơ chế: mỗi tiến trình chạy một file YAML; bên trong mỗi file vẫn áp dụng concurrency của performance.
+
+--------------------------------------------------------------------------------
+6) CẤU HÌNH & CÁCH SỬ DỤNG
+--------------------------------------------------------------------------------
+6.1 CLI
+- Ví dụ 1: Bật retry + concurrency cho một file
+  `pyresttest https://api.example.com examples/miniapp-test.yaml --max-retries 3 --max-concurrency 10`
+- Ví dụ 2: Chạy nhiều file tuần tự
+  `pyresttest https://api.example.com --tests "examples/*.yaml"`
+- Ví dụ 3: Chạy nhiều file song song 4 tiến trình
+  `pyresttest https://api.example.com --tests "examples/*.yaml" --parallel-suites 4`
+
+6.2 YAML (gợi ý phần performance)
+```
+performance:
+  repeat: 100
+  concurrency: 10
+  mode: "sync"  # hoặc "async"
+  timeout: 30
+```
+
+6.3 Programmatic API
+```
+from pyresttest.retry import RetryConfig
+from pyresttest import resttest
+
+retry = RetryConfig(max_retries=3, backoff_base=0.5, backoff_max=30)
+result = resttest.run_test(test, retry_config=retry, max_concurrency=10)
+```
+
+6.4 Auto-configured Runner (JSON)
+- Chạy: `python examples/auto_runner.py --config examples/test_config.json --env staging`
+- Cấu trúc JSON rút gọn:
+```
+{
+  "project_name": "My API Tests",
+  "global_settings": { "base_url": "https://api.example.com", "retry": {"max_retries": 3}, "concurrency": {"max_concurrent": 10} },
+  "environments": { "dev": {"base_url": "http://localhost:8000"}, "prod": {"base_url": "https://api.example.com"} },
+  "test_suites": [ {"name": "Smoke Tests", "enabled": true, "files": ["examples/schema_test.yaml"] } ]
+}
+```
+
+--------------------------------------------------------------------------------
+7) CÁC VẤN ĐỀ ĐÃ KHẮC PHỤC (SO VỚI BẢN GỐC)
+--------------------------------------------------------------------------------
+- Flakiness do mạng/5xx/timeout → giảm nhờ Retry có chiến lược backoff.
+- Quá tải do không kiểm soát đồng thời → hạn chế qua concurrency (sync/async) và song song file có kiểm soát.
+- Thiếu cách dùng linh hoạt → bổ sung Programmatic API và Auto-runner JSON.
+- Thiếu benchmark/async → có Performance modules và mẫu cấu hình rõ ràng.
+
+--------------------------------------------------------------------------------
+8) TESTING & QUALITY GATES
+--------------------------------------------------------------------------------
+- Unit: `pyresttest/test_retry.py` – 14 tests PASS.
+- Smoke/Integration: chạy CLI/YAML/Programmatic/Auto-runner.
+- Quality gates: build sạch, docs đầy đủ, summary rõ ràng.
+
+--------------------------------------------------------------------------------
+9) SO SÁNH HIỆU NĂNG & TÁC ĐỘNG
+--------------------------------------------------------------------------------
+- Retry OFF (mặc định): overhead ~0.
+- Retry ON: overhead tỷ lệ với số lần retry thực tế; nên bật mức hợp lý.
+- Concurrency Sync: chi phí thấp; phù hợp nhiều workloads HTTP/1.1.
+- Concurrency Async: throughput cao; cần aiohttp; overhead ~5–10% do runtime async.
+
+--------------------------------------------------------------------------------
+10) ROADMAP KHUYẾN NGHỊ
+--------------------------------------------------------------------------------
+- Backoff jitter (full/decorrelated) để tránh đồng pha.
+- Retry budget (max elapsed) kiểm soát thời lượng pipeline.
+- Per-status retry policy (429/408 theo nhu cầu thực tế).
+- Circuit breaker theo failure rate.
+- Reporter JUnit/JSON/Allure; structured logging.
+- Rate limiting (token bucket) tách biệt concurrency.
+- HTTP client abstraction + httpx/HTTP2.
+- Song song nhiều file nâng cao (đa tiến trình + gom kết quả chi tiết).
+- Import OpenAPI/Postman; plugins auth (OAuth2/JWT/SigV4).
+- Observability: Prometheus metrics, OpenTelemetry traces.
+
+--------------------------------------------------------------------------------
+11) PHỤ LỤC: BẢN ĐỒ THAY ĐỔI FILE → CHỨC NĂNG
+--------------------------------------------------------------------------------
+- `pyresttest/retry.py` → Cốt lõi retry, backoff, should_retry, wrappers sync/async.
+- `pyresttest/performance.py` → Benchmark sync; tích hợp retry + thống kê.
+- `pyresttest/performance_async.py` → Benchmark async; semaphore + retry + timeout.
+- `pyresttest/resttest.py` → CLI flags; chạy đa file; ghép retry/concurrency; ProcessPoolExecutor.
+- `examples/programmatic_usage.py` → 8 mẫu API Python.
+- `examples/auto_runner.py` + `examples/test_config.json` → Runner JSON đa môi trường.
+- `docs/retry_and_concurrency.md`, `docs/USAGE_GUIDE.md`, `examples/README.md` → Tài liệu hướng dẫn.
+
+--------------------------------------------------------------------------------
+12) KẾT LUẬN
+--------------------------------------------------------------------------------
+Nâng cấp đã đưa PyRestTest từ mức công cụ kiểm thử cơ bản lên thành khung làm việc kiểm thử API sẵn sàng production: ổn định hơn (retry), kiểm soát tải tốt (concurrency, parallel suites), đa cách dùng (CLI/API/Auto-runner), và có benchmark minh bạch (sync/async). Tương thích ngược giúp áp dụng nhanh trong dự án hiện tại, và các roadmap đề xuất sẽ tiếp tục nâng trải nghiệm, hiệu năng và khả năng quan sát.
+
+Hết.
+================================================================================
+ 
+PHỤ LỤC MỞ RỘNG: BÁO CÁO CHI TIẾT (PHIÊN BẢN DÀI)
+================================================================================
+
+MỤC LỤC RÚT GỌN
+- A. Executive Summary (Tóm tắt điều hành)
+- B. Bối cảnh & Hạn chế của PyRestTest gốc
+- C. Thiết kế chi tiết Giai đoạn 1 (Performance & Async)
+- D. Thiết kế chi tiết Giai đoạn 2 (Retry & Concurrency)
+- E. Thuật toán & Quy tắc (Backoff, ShouldRetry, Semaphore)
+- F. Cấu hình & Thứ tự ưu tiên (CLI ↔ YAML ↔ JSON ↔ Mặc định)
+- G. Kịch bản sử dụng tiêu biểu (CI/CD, Load test, Monitoring)
+- H. Xử lý lỗi & Logging (taxonomy, khuyến nghị)
+- I. Tương thích ngược & Hướng dẫn chuyển đổi (Migration)
+- J. Kiểm thử & Phương pháp đo hiệu năng
+- K. Quality Gates & Tiêu chí chấp nhận
+- L. Rủi ro & Giảm thiểu
+- M. Lộ trình phát triển (Roadmap có lý do)
+- N. Phụ lục: Bản đồ thay đổi file → chức năng
+
+--------------------------------------------------------------------------------
+A) EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+- Mục tiêu: Nâng độ tin cậy (retry), kiểm soát tải (concurrency), và mở rộng cách dùng (CLI/Script/Auto-runner) mà vẫn tương thích ngược.
+- Kết quả chính:
+  1) Performance & Async (GĐ1): Bổ sung benchmark framework và HTTP async cho throughput cao.
+  2) Retry & Concurrency (GĐ2): Retry exponential backoff, giới hạn đồng thời (sync/async), API lập trình, auto-runner JSON đa môi trường.
+  3) Tài liệu & Ví dụ: Hướng dẫn chi tiết, examples đầy đủ, sẵn sàng tích hợp CI/CD.
+- Tác động: Giảm flaky tests, tăng ổn định pipeline, cho phép kiểm soát tài nguyên và mô phỏng tải thực tế.
+
+--------------------------------------------------------------------------------
+B) BỐI CẢNH & HẠN CHẾ CỦA PYRESTTEST GỐC
+--------------------------------------------------------------------------------
+- Điểm mạnh: Ngữ nghĩa YAML rõ ràng, dễ định nghĩa test REST; validators và extractors linh hoạt.
+- Hạn chế ban đầu:
+  • Chưa có cơ chế retry có kiểm soát → dễ phát sinh kết quả âm giả khi mạng không ổn.
+  • Thiếu giới hạn đồng thời ở cấp khung → khó kiểm soát tải, dễ gây quá tải hệ thống đích.
+  • Kênh sử dụng chủ yếu qua CLI → khó nhúng sâu vào workflow Python hoặc chạy đa môi trường theo cấu hình hợp nhất.
+
+--------------------------------------------------------------------------------
+C) THIẾT KẾ CHI TIẾT: GIAI ĐOẠN 1 (PERFORMANCE & ASYNC)
+--------------------------------------------------------------------------------
+1. performance.py (Sync)
+  - Mục tiêu: Benchmark endpoints, ghi nhận min/max/avg, đếm pass/fail theo tiêu chí, ngưỡng (threshold).
+  - Kỹ thuật: Tận dụng requests.Session (kết nối tái sử dụng), ThreadPoolExecutor cho chạy lặp đồng thời có kiểm soát.
+  - Kết quả: Có thể tạo workload ổn định, đo lường nhất quán.
+
+2. performance_async.py (Async)
+  - Mục tiêu: Tối ưu throughput với I/O không chặn (aiohttp), phù hợp nhiều kết nối mạng.
+  - Kỹ thuật: asyncio + aiohttp.ClientSession + Semaphore (chi tiết ở phần E), cấu hình timeout hợp lý.
+  - Kết quả: Nâng trần đồng thời (concurrency ceiling), giảm chi phí context switching so với nhiều thread.
+
+Thiết kế dữ liệu (rút gọn):
+- Kết quả hiệu năng gồm: tổng request, pass/fail, min/max/avg ms, số retry (khi GĐ2 bật), tỉ lệ vượt ngưỡng.
+
+--------------------------------------------------------------------------------
+D) THIẾT KẾ CHI TIẾT: GIAI ĐOẠN 2 (RETRY & CONCURRENCY)
+--------------------------------------------------------------------------------
+1. retry.py
+  - RetryConfig: max_retries, backoff_base, backoff_max, (tùy chọn) retryable_statuses.
+  - retry_sync(fn, config): Bao bọc lời gọi HTTP sync; lặp lại theo backoff khi nên retry.
+  - retry_async(coro, config): Tương tự cho async; sử dụng asyncio.sleep cho delay.
+  - should_retry(status, exception): Quyết định retry cho 5xx, timeout, connection reset; không retry cho 4xx trừ khi cấu hình.
+
+2. Concurrency control tích hợp
+  - Sync: ThreadPoolExecutor(max_workers=N) → kiểm soát số request đồng thời.
+  - Async: asyncio.Semaphore(N) → chỉ cho phép N coroutine truy cập đoạn quan trọng.
+
+3. resttest.py
+  - CLI flags mới: --max-retries, --retry-backoff-base, --retry-backoff-max, --max-concurrency.
+  - Luồng chạy: Tạo RetryConfig từ args; truyền xuống test runner/performance layer.
+
+4. Examples & Runner
+  - examples/programmatic_usage.py: 8 kịch bản dùng API Python (từ cơ bản đến nâng cao).
+  - examples/auto_runner.py: Đọc JSON, chọn environment, gom test suites, xuất kết quả.
+
+--------------------------------------------------------------------------------
+E) THUẬT TOÁN & QUY TẮC
+--------------------------------------------------------------------------------
+1. Exponential Backoff
+  - Công thức: delay = min(backoff_base * 2^attempt, backoff_max).
+  - Gợi ý mở rộng: jitter (random hóa một phần delay) để tránh hiệu ứng thundering herd.
+
+2. ShouldRetry
+  - Mặc định: retry khi HTTP 5xx (500/502/503/504), lỗi kết nối, timeout.
+  - Không retry: 2xx/3xx/4xx (trừ khi cấu hình retryable_statuses bổ sung).
+  - Lý do: 4xx thường là lỗi phía client/test; retry không giúp khắc phục.
+
+3. Semaphore (Async Concurrency)
+  - Nguyên tắc: Chỉ cho phép K coroutine thực thi đồng thời phần gửi request/đợi phản hồi.
+  - Lợi ích: Kiểm soát áp lực lên server và client, tránh quá tải socket/FD.
+
+4. ThreadPoolExecutor (Sync Concurrency)
+  - max_workers nên tương quan với bản chất I/O (cao hơn CPU bound), nhưng không nên quá lớn gây contention.
+
+--------------------------------------------------------------------------------
+F) CẤU HÌNH & THỨ TỰ ƯU TIÊN
+--------------------------------------------------------------------------------
+- Mặc định (trong mã) < YAML file < JSON (auto-runner) < CLI.
+- Quy tắc gợi ý: Tham số cụ thể (per-suite/per-test) ghi đè global; CLI dùng cho override nhanh khi chạy pipeline.
+
+Ví dụ tư duy precedence:
+1) Nếu CLI --max-retries=3 → ưu tiên cao nhất.
+2) Nếu không có CLI, lấy từ JSON (global_settings.retry.max_retries hoặc theo suite).
+3) Nếu không có JSON, lấy từ YAML (trường mở rộng của performance hoặc test meta nếu có).
+4) Nếu không có, dùng mặc định (0 = tắt retry).
+
+--------------------------------------------------------------------------------
+G) KỊCH BẢN SỬ DỤNG TIÊU BIỂU
+--------------------------------------------------------------------------------
+1. CI/CD Smoke/Regression
+  - Bật retry mức vừa (2–3) để giảm flakiness; concurrency vừa (5–20) để không quá tải runner.
+2. Load/Stress Test có kiểm soát
+  - Concurrency cao (50–100+), retry thấp (0–1) để giữ đặc tính tải gần thực tế.
+3. Monitoring/Canary
+  - Retry cao hơn (3–5), concurrency thấp; tập trung độ tin cậy và cảnh báo qua retry rate.
+
+--------------------------------------------------------------------------------
+H) XỬ LÝ LỖI & LOGGING
+--------------------------------------------------------------------------------
+- Cấp độ gợi ý:
+  • DEBUG: log từng lần retry (nỗ lực, delay,原因).  
+  • INFO: tổng quan lượt chạy, tóm tắt retry statistics.  
+  • WARNING: bất thường có thể tự phục hồi.  
+  • ERROR: thất bại sau cùng (exhausted retries).
+- Thực hành: Bật DEBUG khi điều tra sự cố; còn lại giữ INFO để tránh nhiễu.
+
+--------------------------------------------------------------------------------
+I) TƯƠNG THÍCH NGƯỢC & MIGRATION
+--------------------------------------------------------------------------------
+- Retry tắt mặc định → hành vi giống bản gốc khi không truyền tham số mới.
+- YAML cũ dùng lại được; có thể từng bước thêm trường performance/concurrency khi cần.
+- Programmatic/Auto-runner chỉ là kênh bổ sung; không bắt buộc chuyển đổi toàn bộ ngay lập tức.
+
+--------------------------------------------------------------------------------
+J) KIỂM THỬ & PHƯƠNG PHÁP ĐO HIỆU NĂNG
+--------------------------------------------------------------------------------
+1. Unit tests (retry): 14 bài test đảm bảo logic cấu hình, backoff, should_retry, và vòng đời retry.
+2. Integration: Chạy thử CLI, YAML, Programmatic, Auto-runner với endpoints thật/giả lập.
+3. Hiệu năng (phương pháp):
+  - Định nghĩa workload có kiểm soát (repeat, concurrency).
+  - Thu thập số liệu: min/max/avg ms, pass/fail, total/avg retries.
+  - Không so sánh máy-máy nếu môi trường khác nhau; tập trung tương đối và xu hướng.
+
+--------------------------------------------------------------------------------
+K) QUALITY GATES & TIÊU CHÍ CHẤP NHẬN
+--------------------------------------------------------------------------------
+- Build/Lint: Không cảnh báo cú pháp; tuân thủ chuẩn PEP8 cơ bản.
+- Unit: Retry module PASS 100%.
+- Smoke: Tập YAML mẫu chạy thành công với mặc định và khi bật retry/concurrency.
+- Docs: Có hướng dẫn CLI/Script/Auto-runner và mẫu config.
+
+--------------------------------------------------------------------------------
+L) RỦI RO & GIẢM THIỂU
+--------------------------------------------------------------------------------
+- Retry quá cao → làm chậm pipeline: Đặt giới hạn hợp lý, cân bằng theo môi trường.
+- Concurrency quá lớn → quá tải server: Dùng semaphore/executor để giới hạn; tăng dần theo quan sát.
+- Async phụ thuộc aiohttp → đảm bảo cài đặt đúng phiên bản; fallback sang sync khi cần.
+
+--------------------------------------------------------------------------------
+M) LỘ TRÌNH PHÁT TRIỂN (ROADMAP CÓ LÝ DO)
+--------------------------------------------------------------------------------
+1. Jitter cho backoff: Giảm khả năng nhiều client retry đồng pha.
+2. Circuit breaker: Ngắt sớm khi tỷ lệ lỗi cao, bảo vệ hệ thống đích.
+3. Export metrics (Prometheus): Dễ quan sát (observability) trong môi trường sản xuất.
+4. Retry budgets: Giới hạn tổng thời gian/chi phí retry theo suite.
+5. Chạy song song nhiều file test: Rút ngắn tổng thời gian pipeline.
+6. Plugin Auth (OAuth2, JWT, AWS SigV4): Hỗ trợ hệ thống yêu cầu xác thực chuẩn.
+
+--------------------------------------------------------------------------------
+N) PHỤ LỤC: BẢN ĐỒ THAY ĐỔI FILE → CHỨC NĂNG
+--------------------------------------------------------------------------------
+- pyresttest/retry.py → Cốt lõi retry (config, backoff, should_retry, sync/async wrappers).
+- pyresttest/performance.py → Benchmark sync; tích hợp retry + thống kê retries.
+- pyresttest/performance_async.py → Benchmark async; semaphore + retry + timeout.
+- pyresttest/resttest.py → CLI flags & luồng ghép retry/concurrency vào thực thi.
+- examples/programmatic_usage.py → Mẫu code API Python (8 tình huống).
+- examples/auto_runner.py + examples/test_config.json → Chạy theo JSON đa môi trường.
+- docs/retry_and_concurrency.md, docs/USAGE_GUIDE.md → Tài liệu hướng dẫn toàn diện.
+
+KẾT THÚC PHẦN MỞ RỘNG
+================================================================================

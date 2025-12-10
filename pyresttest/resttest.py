@@ -10,6 +10,8 @@ import csv
 import logging
 import threading
 from optparse import OptionParser
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import glob
 import requests
 from email import message_from_string  # For headers handling
 import time
@@ -311,8 +313,18 @@ def read_file(path):
     return string
 
 
-def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None, *args, **kwargs):
-    """ Put together test pieces: configure & run actual test, return results """
+def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None, 
+             retry_config=None, max_concurrency=None, *args, **kwargs):
+    """ Put together test pieces: configure & run actual test, return results 
+    
+    Args:
+        mytest: Test object to execute
+        test_config: TestConfig for test execution
+        context: Context for variable binding
+        curl_handle: Optional reusable curl handle
+        retry_config: Optional RetryConfig for retry behavior
+        max_concurrency: Optional max concurrent requests for performance tests
+    """
 
     # if hasattr(mytest, 'performance') and mytest.performance:
     #     return run_performance_test(mytest, test_config, context)
@@ -323,11 +335,11 @@ def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None, *
         if mode == "async":
             # Async performance mode
             print(f"[Async Performance Mode] Test: {mytest.name}")
-            return execute_async_performance(mytest)
+            return execute_async_performance(mytest, max_concurrency, retry_config)
         else:
             # ThreadPool-based performance
             print(f"[Sync Performance Mode] Test: {mytest.name}")
-            return run_performance_test(mytest, test_config, context)
+            return run_performance_test(mytest, test_config, context, max_concurrency, retry_config)
     
     
     # Initialize a context if not supplied
@@ -644,8 +656,17 @@ def log_failure(failure, context=None, test_config=TestConfig()):
         logger.error("Validator/Error details:" + str(failure.details))
 
 
-def run_testsets(testsets):
-    """ Execute a set of tests, using given TestSet list input """
+def run_testsets(testsets, retry_config=None, max_concurrency=None):
+    """ Execute a set of tests, using given TestSet list input 
+    
+    Args:
+        testsets: List of TestSet objects to execute
+        retry_config: Optional RetryConfig for retry behavior
+        max_concurrency: Optional max concurrent requests for performance tests
+    
+    Returns:
+        Total number of failures
+    """
     group_results = dict()  # results, by group
     group_failure_counts = dict()
     total_failures = 0
@@ -680,7 +701,9 @@ def run_testsets(testsets):
                 group_results[test.group] = list()
                 group_failure_counts[test.group] = 0
 
-            result = run_test(test, test_config=myconfig, context=context, curl_handle=curl_handle)
+            result = run_test(test, test_config=myconfig, context=context, 
+                            curl_handle=curl_handle, retry_config=retry_config,
+                            max_concurrency=max_concurrency)
             result.body = None  # Remove the body, save some memory!
 
             if not result.passed:  # Print failure, increase failure counts for that test group
@@ -812,7 +835,7 @@ except ImportError as ie:
     logging.debug(
         "Failed to load jmespath extractor, make sure the jmespath module is installed if you wish to use jmespath extractor.")
 
-def main(args):
+def execute_tests_with_args(args):
     """
     Execute a test against the given base url.
 
@@ -825,6 +848,10 @@ def main(args):
         interactive   - OPTIONAL - mode that prints info before and after test exectuion and pauses for user input for each test
         absolute_urls - OPTIONAL - mode that treats URLs in tests as absolute/full URLs instead of relative URLs
         skip_term_colors - OPTIONAL - mode that turn off the output term colors
+        max_retries   - OPTIONAL - maximum number of retry attempts (default: 0)
+        retry_backoff_base - OPTIONAL - base delay for exponential backoff (default: 0.5)
+        retry_backoff_max - OPTIONAL - max delay between retries (default: 30)
+        max_concurrency - OPTIONAL - max concurrent requests for performance tests
     """
 
     if 'log' in args and args['log'] is not None:
@@ -878,10 +905,114 @@ def main(args):
         if 'skip_term_colors' in args and args['skip_term_colors'] is not None:
             t.config.skip_term_colors = safe_to_bool(args['skip_term_colors'])
 
-    # Execute all testsets
-    failures = run_testsets(tests)
+    # Create RetryConfig from CLI args
+    retry_config = None
+    if 'max_retries' in args and args['max_retries'] and args['max_retries'] > 0:
+        from .retry import RetryConfig
+        retry_config = RetryConfig(
+            max_retries=args['max_retries'],
+            backoff_base=args.get('retry_backoff_base', 0.5),
+            backoff_max=args.get('retry_backoff_max', 30.0)
+        )
+        logger.info(f"Retry enabled: max_retries={retry_config.max_retries}, "
+                   f"backoff_base={retry_config.backoff_base}s, "
+                   f"backoff_max={retry_config.backoff_max}s")
 
-    sys.exit(failures)
+    # Get max_concurrency from args
+    max_concurrency = args.get('max_concurrency', None)
+    if max_concurrency:
+        logger.info(f"Max concurrency set to: {max_concurrency}")
+
+    # Execute all testsets with retry and concurrency configs
+    failures = run_testsets(tests, retry_config=retry_config, max_concurrency=max_concurrency)
+    return failures
+
+
+def _worker_execute_single_file(args_base, test_file):
+    """Worker function for process pool execution.
+
+    Clones args dict, sets test file, runs execute_tests_with_args and returns (test_file, failures).
+    """
+    # Ensure we don't mutate the base dict across processes
+    args = dict(args_base)
+    args['test'] = test_file
+    try:
+        failures = execute_tests_with_args(args)
+        return (test_file, failures, None)
+    except Exception as e:
+        # Return error info to main process
+        return (test_file, None, str(e))
+
+
+def execute_multiple_files(args_base, test_files, parallel_suites=1):
+    """Execute multiple test files, optionally in parallel using processes.
+
+    Args:
+        args_base: base CLI args dict; 'test' will be overridden per file
+        test_files: list of test file paths
+        parallel_suites: process count; if <=1 runs sequentially
+
+    Returns:
+        Sum of failure counts across all files
+    """
+    total_failures = 0
+    if not test_files:
+        raise ValueError("No test files provided")
+
+    if parallel_suites and parallel_suites > 1:
+        logger.info(f"Executing {len(test_files)} test files in parallel (processes={parallel_suites})")
+        with ProcessPoolExecutor(max_workers=parallel_suites) as executor:
+            futures = {executor.submit(_worker_execute_single_file, args_base, tf): tf for tf in test_files}
+            for fut in as_completed(futures):
+                tf = futures[fut]
+                test_file, failures, err = fut.result()
+                if err is not None:
+                    logger.error(f"Test file failed to execute: {test_file} error={err}")
+                    # Count as all failed (1) to surface error; adjust policy as needed
+                    total_failures += 1
+                else:
+                    logger.info(f"Completed: {test_file} failures={failures}")
+                    total_failures += int(failures or 0)
+    else:
+        logger.info(f"Executing {len(test_files)} test files sequentially")
+        for tf in test_files:
+            failures = execute_tests_with_args({**args_base, 'test': tf})
+            logger.info(f"Completed: {tf} failures={failures}")
+            total_failures += int(failures or 0)
+
+    return total_failures
+
+
+def main(args):
+    """
+    Execute tests based on args; supports single file (--test) or multiple files (--tests, --tests-glob, --tests-dir).
+    """
+    # If user provided multiple files, route to multi-file executor
+    test_list = []
+    if args.get('tests'):
+        # Accept comma-separated list; also expand any globs inside
+        raw = [s.strip() for s in str(args['tests']).split(',') if s.strip()]
+        expanded = []
+        for item in raw:
+            if any(ch in item for ch in ['*', '?', '[']):
+                expanded.extend(glob.glob(item))
+            else:
+                expanded.append(item)
+        test_list = expanded
+    elif args.get('test'):
+        test_list = [args['test']]
+
+    if not test_list:
+        raise Exception("No test files specified. Use --test or --tests")
+
+    parallel_suites = args.get('parallel_suites', 1)
+
+    if len(test_list) == 1 and (not parallel_suites or parallel_suites <= 1):
+        failures = execute_tests_with_args(args)
+        sys.exit(failures)
+    else:
+        failures = execute_multiple_files(args, test_list, parallel_suites=parallel_suites)
+        sys.exit(failures)
 
 
 def parse_command_line_args(args_in):
@@ -912,12 +1043,26 @@ def parse_command_line_args(args_in):
                       action="store_true", dest="absolute_urls")
     parser.add_option(u'--skip_term_colors', help='Turn off the output term colors',
                       action='store_true', default=False, dest="skip_term_colors")
+    parser.add_option(u'--max-retries', help='Maximum number of retry attempts for failed requests (default: 0)',
+                      action='store', type='int', default=0, dest='max_retries')
+    parser.add_option(u'--retry-backoff-base', help='Base delay in seconds for exponential backoff (default: 0.5)',
+                      action='store', type='float', default=0.5, dest='retry_backoff_base')
+    parser.add_option(u'--retry-backoff-max', help='Maximum delay in seconds between retries (default: 30)',
+                      action='store', type='float', default=30.0, dest='retry_backoff_max')
+    parser.add_option(u'--max-concurrency', help='Maximum concurrent requests for performance tests (default: auto)',
+                      action='store', type='int', default=None, dest='max_concurrency')
+    parser.add_option(u'--tests', help='Comma-separated list of test YAML files; globs allowed (e.g. "examples/*.yaml")',
+                      action='store', type='string', default=None, dest='tests')
+    parser.add_option(u'--parallel-suites', help='Number of processes to run test files in parallel',
+                      action='store', type='int', default=1, dest='parallel_suites')
 
     (args, unparsed_args) = parser.parse_args(args_in)
     args = vars(args)
 
     # Handle url/test as named, or, failing that, positional arguments
-    if not args['url'] or not args['test']:
+    # If --tests is provided, we don't need positional handling for --test
+    has_tests_multi = bool(args.get('tests'))
+    if not args['url'] or (not args['test'] and not has_tests_multi):
         if len(unparsed_args) == 2:
             args[u'url'] = unparsed_args[0]
             args[u'test'] = unparsed_args[1]
@@ -928,7 +1073,7 @@ def parse_command_line_args(args_in):
         else:
             parser.print_help()
             parser.error(
-                "wrong number of arguments, need both url and test filename, either as 1st and 2nd parameters or via --url and --test")
+                "wrong number of arguments, need url and test filename (or --tests), either as positional or via --url/--test/--tests")
 
     # So modules can be loaded from current folder
     args['cwd'] = os.path.realpath(os.path.abspath(os.getcwd()))

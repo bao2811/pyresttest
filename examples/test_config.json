@@ -1,0 +1,154 @@
+{
+  "project_name": "My API Testing Project",
+  "description": "Automated API testing with retry and concurrency control",
+
+  "global_settings": {
+    "base_url": "https://api.example.com",
+    "retry": {
+      "max_retries": 3,
+      "backoff_base": 0.5,
+      "backoff_max": 30,
+      "retry_on_statuses": [500, 502, 503, 504, 429]
+    },
+    "concurrency": {
+      "max_concurrent": 10,
+      "mode": "sync"
+    },
+    "timeouts": {
+      "connect_timeout": 10,
+      "read_timeout": 30
+    },
+    "logging": {
+      "level": "info",
+      "print_bodies": false,
+      "print_headers": false
+    }
+  },
+
+  "environments": {
+    "development": {
+      "base_url": "http://localhost:8000",
+      "retry": {
+        "max_retries": 1
+      }
+    },
+    "staging": {
+      "base_url": "https://staging.api.example.com",
+      "retry": {
+        "max_retries": 2
+      }
+    },
+    "production": {
+      "base_url": "https://api.example.com",
+      "retry": {
+        "max_retries": 3
+      },
+      "concurrency": {
+        "max_concurrent": 20
+      }
+    }
+  },
+
+  "test_suites": [
+    {
+      "name": "Smoke Tests",
+      "description": "Basic health checks",
+      "enabled": true,
+      "tests": [
+        {
+          "name": "Health Check",
+          "path": "/health",
+          "method": "GET",
+          "expected_status": [200],
+          "timeout": 5
+        },
+        {
+          "name": "API Version",
+          "path": "/version",
+          "method": "GET",
+          "expected_status": [200]
+        }
+      ]
+    },
+    {
+      "name": "User API Tests",
+      "description": "User management endpoints",
+      "enabled": true,
+      "tests": [
+        {
+          "name": "Get Users List",
+          "path": "/api/users",
+          "method": "GET",
+          "expected_status": [200],
+          "headers": {
+            "Accept": "application/json"
+          }
+        },
+        {
+          "name": "Get Single User",
+          "path": "/api/users/1",
+          "method": "GET",
+          "expected_status": [200, 404]
+        },
+        {
+          "name": "Create User",
+          "path": "/api/users",
+          "method": "POST",
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "name": "Test User",
+            "email": "test@example.com"
+          },
+          "expected_status": [201]
+        }
+      ]
+    },
+    {
+      "name": "Performance Tests",
+      "description": "Load and performance testing",
+      "enabled": false,
+      "tests": [
+        {
+          "name": "Load Test - Get Users",
+          "path": "/api/users",
+          "method": "GET",
+          "expected_status": [200],
+          "performance": {
+            "repeat": 100,
+            "concurrency": 10,
+            "mode": "sync",
+            "threshold_ms": 500
+          }
+        },
+        {
+          "name": "Stress Test - Search",
+          "path": "/api/search?q=test",
+          "method": "GET",
+          "expected_status": [200],
+          "performance": {
+            "repeat": 1000,
+            "concurrency": 50,
+            "mode": "async",
+            "threshold_ms": 1000,
+            "timeout": 30
+          }
+        }
+      ]
+    }
+  ],
+
+  "hooks": {
+    "before_all": [],
+    "after_all": [],
+    "before_each": [],
+    "after_each": []
+  },
+
+  "reporting": {
+    "formats": ["console", "json"],
+    "output_dir": "./test-results",
+    "json_file": "results.json"
+  }
+}

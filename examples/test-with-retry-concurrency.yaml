@@ -1,0 +1,33 @@
+---
+# Example test demonstrating retry and concurrency features
+- config:
+    - testset: "Performance test with retry and concurrency"
+
+- test:
+    - name: "Basic GET request"
+    - url: "/api/person/1/"
+    - method: "GET"
+    - expected_status: [200]
+
+- test:
+    - name: "Performance test - sync mode"
+    - url: "/api/person/"
+    - method: "GET"
+    - expected_status: [200]
+    - performance:
+        repeat: 50
+        concurrency: 10
+        mode: "sync"
+        threshold_ms: 500
+
+- test:
+    - name: "Performance test - async mode"
+    - url: "/api/person/"
+    - method: "GET"
+    - expected_status: [200]
+    - performance:
+        repeat: 100
+        concurrency: 20
+        mode: "async"
+        timeout: 30
+        connect_timeout: 5
