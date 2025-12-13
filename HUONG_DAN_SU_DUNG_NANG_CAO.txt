@@ -1,0 +1,1191 @@
+================================================================================
+HƯỚNG DẪN SỬ DỤNG NÂNG CAO PYRESTTEST
+TÀI LIỆU KỸ THUẬT: CƠ CHẾ HOẠT ĐỘNG VÀ SỬ DỤNG PROGRAMMATIC API
+================================================================================
+
+Ngày: 12/12/2025
+Tác giả: bao2811
+Mục đích: Giải thích chi tiết cách hoạt động, thư viện/hàm được sử dụng, và cách 
+          tạo script Python để đọc YAML config tùy chỉnh thay vì chạy qua CLI.
+
+MỤC LỤC
+1. Tổng quan các nâng cấp đã triển khai
+2. Chi tiết kỹ thuật từng module
+   2.1 Retry Module (pyresttest/retry.py)
+   2.2 Performance Sync (pyresttest/performance.py)
+   2.3 Performance Async (pyresttest/performance_async.py)
+   2.4 Parallel Execution (pyresttest/resttest.py)
+3. Thư viện và Dependencies
+4. Cách PyRestTest đọc và xử lý YAML
+5. Sử dụng Programmatic API (tạo script.py riêng)
+   5.1 Kịch bản 1: Chạy test đơn giản từ YAML
+   5.2 Kịch bản 2: Chạy với Retry Config
+   5.3 Kịch bản 3: Chạy Performance Test với Concurrency
+   5.4 Kịch bản 4: Chạy nhiều file YAML song song
+   5.5 Kịch bản 5: Đọc config từ JSON và chạy
+6. Auto-Runner Framework
+7. Luồng xử lý hoàn chỉnh (từ YAML → Result)
+8. Best Practices và Tips
+
+================================================================================
+1. TỔNG QUAN CÁC NÂNG CẤP ĐÃ TRIỂN KHAI
+================================================================================
+
+GIAI ĐOẠN 1 (GĐ1): Performance & Async
+├── pyresttest/performance.py          → Benchmark đồng bộ (sync)
+└── pyresttest/performance_async.py    → Benchmark bất đồng bộ (async)
+
+GIAI ĐOẠN 2 (GĐ2): Retry, Concurrency, Programmatic API
+├── pyresttest/retry.py                → Retry logic với exponential backoff
+├── Tích hợp vào performance.py        → Thêm retry cho benchmark sync
+├── Tích hợp vào performance_async.py  → Thêm retry cho benchmark async
+├── Tích hợp vào resttest.py           → CLI flags và parallel execution
+├── examples/programmatic_usage.py     → 8 ví dụ sử dụng API Python
+└── examples/auto_runner.py            → Auto-runner với JSON config
+
+NÂNG CẤP BỔ SUNG: Parallel File Execution
+└── pyresttest/resttest.py             → Chạy nhiều file YAML song song với ProcessPoolExecutor
+
+================================================================================
+2. CHI TIẾT KỸ THUẬT TỪNG MODULE
+================================================================================
+
+2.1 RETRY MODULE (pyresttest/retry.py)
+────────────────────────────────────────────────────────────────────────────
+
+▸ MỤC ĐÍCH
+  - Tự động retry request khi gặp lỗi tạm thời (5xx, timeout, connection error)
+  - Sử dụng exponential backoff để tránh làm quá tải server
+
+▸ CẤU TRÚC CHÍNH
+
+class RetryConfig:
+    """Cấu hình retry"""
+    Thuộc tính:
+    - max_retries: int          # Số lần retry tối đa (mặc định: 0)
+    - backoff_base: float       # Thời gian chờ cơ bản (mặc định: 0.5s)
+    - backoff_max: float        # Thời gian chờ tối đa (mặc định: 30s)
+    - retryable_statuses: set   # HTTP codes có thể retry (mặc định: {500,502,503,504})
+
+▸ HÀM QUAN TRỌNG
+
+1. should_retry(status_code, exception)
+   - Quyết định có nên retry hay không
+   - Retry khi:
+     • HTTP 5xx (500, 502, 503, 504)
+     • Connection error (ConnectionError, Timeout)
+     • Socket error, DNS resolution failed
+   - KHÔNG retry khi:
+     • HTTP 2xx, 3xx (thành công)
+     • HTTP 4xx (lỗi client, retry vô ích)
+
+2. calculate_delay(attempt, backoff_base, backoff_max)
+   - Tính thời gian chờ trước khi retry
+   - Công thức: delay = min(backoff_base * (2^attempt), backoff_max)
+   - Ví dụ: backoff_base=0.5, backoff_max=30
+     • Attempt 0: 0.5s
+     • Attempt 1: 1s
+     • Attempt 2: 2s
+     • Attempt 3: 4s
+     • Attempt 4: 8s
+     • Attempt 5: 16s
+     • Attempt 6: 30s (đã đạt max)
+
+3. retry_sync(fn, retry_config, *args, **kwargs)
+   - Wrapper cho hàm đồng bộ (sync)
+   - Tự động retry khi should_retry() = True
+   - Sử dụng time.sleep() để chờ giữa các lần retry
+   - Trả về: (result, retry_count)
+
+4. retry_async(coro_fn, retry_config, *args, **kwargs)
+   - Wrapper cho coroutine (async)
+   - Tự động retry khi should_retry() = True
+   - Sử dụng asyncio.sleep() để chờ (không chặn event loop)
+   - Trả về: (result, retry_count)
+
+▸ CÁCH HOẠT ĐỘNG (Pseudocode)
+
+retry_sync/async:
+    for attempt in range(max_retries + 1):
+        try:
+            result = execute_function()
+            return (result, attempt)
+        except Exception as e:
+            if should_retry(status_code, e) and attempt < max_retries:
+                delay = calculate_delay(attempt, backoff_base, backoff_max)
+                sleep(delay)
+                continue
+            else:
+                raise
+
+────────────────────────────────────────────────────────────────────────────
+2.2 PERFORMANCE SYNC (pyresttest/performance.py)
+────────────────────────────────────────────────────────────────────────────
+
+▸ MỤC ĐÍCH
+  - Benchmark endpoints với requests đồng bộ
+  - Thu thập metrics: min/max/avg response time, pass/fail count
+  - Hỗ trợ concurrency với ThreadPoolExecutor
+
+▸ THÀNH PHẦN CHÍNH
+
+1. BenchmarkConfig
+   - warmup_runs: int         # Số request khởi động (không tính vào kết quả)
+   - repeat: int              # Số lần lặp chính
+   - concurrency: int         # Số request đồng thời
+   - timeout: float           # Timeout cho mỗi request
+   - threshold_ms: float      # Ngưỡng thời gian chấp nhận được
+
+2. run_benchmark_sync(test, benchmark_config, retry_config=None)
+   - Chạy benchmark với requests.Session
+   - Sử dụng ThreadPoolExecutor để kiểm soát concurrency
+   - Tích hợp retry_sync() nếu retry_config được cung cấp
+   - Thu thập thống kê: response times, retry counts
+
+▸ LUỒNG HOẠT ĐỘNG
+
+1. Tạo requests.Session (connection pooling)
+2. Warmup phase: chạy warmup_runs request (bỏ qua kết quả)
+3. Benchmark phase:
+   - Tạo ThreadPoolExecutor(max_workers=concurrency)
+   - Submit repeat tasks vào pool
+   - Mỗi task:
+     • Gọi retry_sync(make_request) nếu có retry_config
+     • Hoặc gọi make_request() trực tiếp
+     • Ghi lại response time và kết quả
+   - Chờ tất cả tasks hoàn thành
+4. Tính toán metrics:
+   - min/max/avg response time
+   - total requests, passed, failed
+   - total/avg retries
+   - threshold violations
+
+▸ CODE SNIPPET
+
+from concurrent.futures import ThreadPoolExecutor
+import requests
+
+session = requests.Session()
+with ThreadPoolExecutor(max_workers=concurrency) as executor:
+    futures = []
+    for i in range(repeat):
+        future = executor.submit(execute_single_request, test, retry_config)
+        futures.append(future)
+    
+    for future in as_completed(futures):
+        result, retry_count = future.result()
+        # Ghi nhận metrics
+
+────────────────────────────────────────────────────────────────────────────
+2.3 PERFORMANCE ASYNC (pyresttest/performance_async.py)
+────────────────────────────────────────────────────────────────────────────
+
+▸ MỤC ĐÍCH
+  - Benchmark với HTTP async (aiohttp) để tăng throughput
+  - Không chặn I/O, phù hợp với workload nhiều kết nối
+
+▸ THÀNH PHẦN CHÍNH
+
+1. run_benchmark_async(test, benchmark_config, retry_config=None)
+   - Sử dụng aiohttp.ClientSession
+   - Kiểm soát concurrency với asyncio.Semaphore
+   - Tích hợp retry_async() cho mỗi request
+
+▸ LUỒNG HOẠT ĐỘNG
+
+1. Tạo aiohttp.ClientSession
+2. Tạo asyncio.Semaphore(concurrency)
+3. Warmup phase (async)
+4. Benchmark phase:
+   - Tạo danh sách coroutines
+   - Mỗi coroutine:
+     • Acquire semaphore (chờ nếu đã đạt giới hạn)
+     • Gọi retry_async(make_async_request)
+     • Release semaphore
+   - Chạy asyncio.gather(*coroutines)
+5. Tính toán metrics tương tự sync
+
+▸ CODE SNIPPET
+
+import aiohttp
+import asyncio
+
+async def run_benchmark_async(test, config, retry_config):
+    semaphore = asyncio.Semaphore(config.concurrency)
+    
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for i in range(config.repeat):
+            task = execute_with_semaphore(session, test, semaphore, retry_config)
+            tasks.append(task)
+        
+        results = await asyncio.gather(*tasks)
+    
+    # Tính metrics từ results
+
+async def execute_with_semaphore(session, test, semaphore, retry_config):
+    async with semaphore:  # Giới hạn concurrency
+        result, retries = await retry_async(make_request, retry_config, session, test)
+        return result, retries
+
+────────────────────────────────────────────────────────────────────────────
+2.4 PARALLEL EXECUTION (pyresttest/resttest.py)
+────────────────────────────────────────────────────────────────────────────
+
+▸ MỤC ĐÍCH
+  - Chạy nhiều file YAML test song song (multi-process)
+  - Giảm tổng thời gian chạy test suite lớn
+
+▸ THÀNH PHẦN CHÍNH
+
+1. execute_tests_with_args(args)
+   - Hàm được trích xuất từ main()
+   - Chạy tests từ một file YAML
+   - Trả về số lượng failures (thay vì sys.exit)
+
+2. _worker_execute_single_file(args_base, test_file)
+   - Worker function cho ProcessPoolExecutor
+   - Nhận args cơ bản + đường dẫn file
+   - Gọi execute_tests_with_args()
+   - Trả về: (test_file, failures, error_message)
+
+3. execute_multiple_files(args_base, test_files, workers)
+   - Orchestrator cho parallel execution
+   - Sử dụng ProcessPoolExecutor(max_workers=workers)
+   - Submit mỗi file vào process pool
+   - Gom kết quả và tính tổng failures
+
+▸ LUỒNG HOẠT ĐỘNG
+
+CLI: pyresttest URL --tests "examples/*.yaml" --workers 4
+
+1. Parse CLI args → lấy test_files (glob expansion)
+2. Nếu workers > 1 và có nhiều files:
+   - Gọi execute_multiple_files()
+   - Tạo ProcessPoolExecutor(max_workers=workers)
+   - Submit mỗi file vào pool
+   - Mỗi worker process:
+     • Chạy execute_tests_with_args() với file đó
+     • Trả về kết quả
+   - Main process nhận kết quả, tính tổng failures
+3. Nếu workers = 1 hoặc chỉ 1 file:
+   - Chạy tuần tự execute_tests_with_args()
+
+▸ CODE SNIPPET
+
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import glob
+
+test_files = []
+for pattern in args.tests.split(','):
+    test_files.extend(glob.glob(pattern.strip()))
+
+with ProcessPoolExecutor(max_workers=workers) as executor:
+    futures = {
+        executor.submit(_worker_execute_single_file, args, f): f 
+        for f in test_files
+    }
+    
+    total_failures = 0
+    for future in as_completed(futures):
+        filename, failures, error = future.result()
+        total_failures += failures
+        print(f"File {filename}: {failures} failures")
+
+return total_failures
+
+================================================================================
+3. THƯ VIỆN VÀ DEPENDENCIES
+================================================================================
+
+▸ CORE DEPENDENCIES (Built-in Python)
+├── time                    → sleep() cho retry sync
+├── asyncio                 → async/await, sleep() cho retry async
+├── concurrent.futures      → ThreadPoolExecutor (sync concurrency)
+│                            → ProcessPoolExecutor (parallel files)
+├── glob                    → Mở rộng wildcard patterns (*.yaml)
+├── optparse                → Parse CLI arguments
+└── json                    → Đọc JSON config cho auto-runner
+
+▸ EXTERNAL DEPENDENCIES
+├── requests                → HTTP client sync (performance.py)
+├── aiohttp                 → HTTP client async (performance_async.py)
+├── pyyaml                  → Parse YAML test files
+└── pycurl                  → HTTP client gốc (compatibility)
+
+▸ OPTIONAL DEPENDENCIES
+└── aiohttp                 → Chỉ cần khi dùng async mode
+
+▸ PHÂN BỔ SỬ DỤNG THƯ VIỆN
+
+Module                      | Thư viện chính
+─────────────────────────────────────────────────────────────────────────
+retry.py                    | time, asyncio
+performance.py              | requests, ThreadPoolExecutor, retry
+performance_async.py        | aiohttp, asyncio.Semaphore, retry
+resttest.py (parallel)      | ProcessPoolExecutor, glob
+resttest.py (core)          | pycurl, requests, pyyaml
+auto_runner.py              | json, argparse
+
+▸ PYTHON VERSION SUPPORT
+- Python 2.6, 2.7: concurrent.futures qua backport
+- Python 3.3+: concurrent.futures built-in
+- Async features: Python 3.5+ (async/await syntax)
+
+================================================================================
+4. CÁCH PYRESTTEST ĐỌC VÀ XỬ LÝ YAML
+================================================================================
+
+▸ ĐỊNH DẠNG YAML CƠ BẢN
+
+---
+- config:
+    - testset: "My API Tests"
+
+- test:
+    - name: "Get user"
+    - url: "/users/1"
+    - method: "GET"
+    - expected_status: [200]
+    - validators:
+        - compare: {jsonpath_mini: "id", expected: 1}
+
+- test:
+    - name: "Create user"
+    - url: "/users"
+    - method: "POST"
+    - headers: {Content-Type: "application/json"}
+    - body: '{"name": "John", "email": "john@example.com"}'
+    - expected_status: [201]
+
+▸ YAML VỚI PERFORMANCE (BENCHMARK)
+
+- benchmark:
+    - name: "Load test endpoint"
+    - url: "/api/data"
+    - method: "GET"
+    - warmup_runs: 10
+    - repeat: 100
+    - concurrency: 10
+    - mode: "sync"  # hoặc "async"
+    - timeout: 30
+    - threshold_ms: 500
+
+▸ LUỒNG PARSE YAML
+
+1. Đọc file YAML → yaml.safe_load()
+2. Parse thành list of test/config/benchmark objects
+3. Với mỗi object:
+   - Nếu là 'config': Lưu cấu hình global
+   - Nếu là 'test': Tạo Test object
+   - Nếu là 'benchmark': Tạo Benchmark object
+4. Thực thi từng test/benchmark theo thứ tự
+
+▸ CODE TRONG resttest.py (simplified)
+
+import yaml
+
+def parse_yaml_test_file(file_path):
+    with open(file_path, 'r') as f:
+        yaml_data = yaml.safe_load(f)
+    
+    tests = []
+    benchmarks = []
+    config = {}
+    
+    for item in yaml_data:
+        if 'config' in item:
+            config.update(item['config'])
+        elif 'test' in item:
+            test = parse_test(item['test'])
+            tests.append(test)
+        elif 'benchmark' in item:
+            benchmark = parse_benchmark(item['benchmark'])
+            benchmarks.append(benchmark)
+    
+    return tests, benchmarks, config
+
+▸ TRÍCH XUẤT THÔNG TIN TỪ YAML
+
+Test object sẽ có:
+- name: str
+- url: str
+- method: str (GET/POST/PUT/DELETE/PATCH)
+- headers: dict
+- body: str hoặc template
+- expected_status: list of int
+- validators: list of Validator objects
+- extractors: list of Extractor objects
+
+Benchmark object sẽ có:
+- Tất cả thuộc tính của Test
+- warmup_runs: int
+- repeat: int
+- concurrency: int
+- mode: "sync" | "async"
+- timeout: float
+- threshold_ms: float
+
+================================================================================
+5. SỬ DỤNG PROGRAMMATIC API (TẠO SCRIPT.PY RIÊNG)
+================================================================================
+
+Thay vì chạy CLI: `pyresttest URL test.yaml`
+Bạn có thể viết script Python để:
+- Đọc YAML tùy chỉnh
+- Cấu hình retry/concurrency động
+- Xử lý kết quả theo logic riêng
+- Tích hợp vào CI/CD pipeline phức tạp
+
+────────────────────────────────────────────────────────────────────────────
+5.1 KỊCH BẢN 1: Chạy test đơn giản từ YAML
+────────────────────────────────────────────────────────────────────────────
+
+▸ FILE: my_test_runner.py
+
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Script tùy chỉnh để chạy PyRestTest từ YAML
+"""
+
+import sys
+import os
+
+# Thêm pyresttest vào path (nếu chưa cài đặt)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'pyresttest'))
+
+from pyresttest import resttest
+from pyresttest.binding import Context
+
+def run_tests_from_yaml(base_url, yaml_file):
+    """
+    Chạy tests từ file YAML
+    
+    Args:
+        base_url: URL gốc (vd: https://api.example.com)
+        yaml_file: Đường dẫn đến file YAML
+    
+    Returns:
+        int: Số lượng test thất bại
+    """
+    # Tạo context (môi trường chạy test)
+    context = Context()
+    
+    # Parse YAML file
+    tests = resttest.read_test_file(yaml_file)
+    
+    # Cấu hình
+    test_config = resttest.TestConfig()
+    test_config.print_bodies = False
+    test_config.print_headers = False
+    test_config.interactive = False
+    
+    # Chạy tests
+    failures = 0
+    for test in tests:
+        mytest = test.realize(context)
+        result = resttest.run_test(mytest, test_config, context, base_url)
+        
+        if not result.passed:
+            failures += 1
+            print(f"❌ FAILED: {test.name}")
+        else:
+            print(f"✅ PASSED: {test.name}")
+    
+    return failures
+
+if __name__ == "__main__":
+    base_url = "https://jsonplaceholder.typicode.com"
+    yaml_file = "examples/miniapp-test.yaml"
+    
+    failures = run_tests_from_yaml(base_url, yaml_file)
+    
+    print(f"\nTổng kết: {failures} test(s) thất bại")
+    sys.exit(failures)
+
+▸ CHẠY
+
+python my_test_runner.py
+
+────────────────────────────────────────────────────────────────────────────
+5.2 KỊCH BẢN 2: Chạy với Retry Config
+────────────────────────────────────────────────────────────────────────────
+
+▸ FILE: my_test_runner_with_retry.py
+
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'pyresttest'))
+
+from pyresttest import resttest
+from pyresttest.retry import RetryConfig
+from pyresttest.binding import Context
+
+def run_tests_with_retry(base_url, yaml_file, max_retries=3):
+    """
+    Chạy tests với retry configuration
+    """
+    # Tạo retry config
+    retry_config = RetryConfig(
+        max_retries=max_retries,
+        backoff_base=0.5,
+        backoff_max=30.0
+    )
+    
+    context = Context()
+    tests = resttest.read_test_file(yaml_file)
+    
+    test_config = resttest.TestConfig()
+    test_config.retry_config = retry_config  # Gán retry config
+    
+    failures = 0
+    total_retries = 0
+    
+    for test in tests:
+        mytest = test.realize(context)
+        
+        # Run test (nội bộ sẽ dùng retry_config)
+        result = resttest.run_test(mytest, test_config, context, base_url)
+        
+        if hasattr(result, 'retry_count'):
+            total_retries += result.retry_count
+        
+        if not result.passed:
+            failures += 1
+            print(f"❌ FAILED: {test.name} (retries: {getattr(result, 'retry_count', 0)})")
+        else:
+            print(f"✅ PASSED: {test.name} (retries: {getattr(result, 'retry_count', 0)})")
+    
+    print(f"\nTổng retries: {total_retries}")
+    print(f"Tổng failures: {failures}")
+    
+    return failures
+
+if __name__ == "__main__":
+    base_url = "https://jsonplaceholder.typicode.com"
+    yaml_file = "examples/miniapp-test.yaml"
+    
+    failures = run_tests_with_retry(base_url, yaml_file, max_retries=3)
+    sys.exit(failures)
+
+────────────────────────────────────────────────────────────────────────────
+5.3 KỊCH BẢN 3: Chạy Performance Test với Concurrency
+────────────────────────────────────────────────────────────────────────────
+
+▸ FILE: my_benchmark_runner.py
+
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'pyresttest'))
+
+from pyresttest import resttest
+from pyresttest.performance import BenchmarkConfig, run_benchmark_sync
+from pyresttest.retry import RetryConfig
+from pyresttest.binding import Context
+
+def run_benchmark(base_url, yaml_file, concurrency=10, repeat=100):
+    """
+    Chạy performance benchmark với concurrency control
+    """
+    # Cấu hình benchmark
+    benchmark_config = BenchmarkConfig(
+        warmup_runs=10,
+        repeat=repeat,
+        concurrency=concurrency,
+        timeout=30.0,
+        threshold_ms=500.0
+    )
+    
+    # Cấu hình retry
+    retry_config = RetryConfig(
+        max_retries=2,
+        backoff_base=0.5,
+        backoff_max=10.0
+    )
+    
+    context = Context()
+    tests = resttest.read_test_file(yaml_file)
+    
+    for test in tests:
+        mytest = test.realize(context)
+        
+        print(f"\n🚀 Running benchmark: {test.name}")
+        print(f"   Concurrency: {concurrency}, Repeat: {repeat}")
+        
+        # Chạy benchmark
+        result = run_benchmark_sync(
+            mytest, 
+            benchmark_config, 
+            retry_config=retry_config,
+            base_url=base_url
+        )
+        
+        # In kết quả
+        print(f"\n📊 Results:")
+        print(f"   Total requests: {result.total_requests}")
+        print(f"   Passed: {result.passed}")
+        print(f"   Failed: {result.failed}")
+        print(f"   Min time: {result.min_time:.2f}ms")
+        print(f"   Max time: {result.max_time:.2f}ms")
+        print(f"   Avg time: {result.avg_time:.2f}ms")
+        print(f"   Total retries: {result.total_retries}")
+        print(f"   Avg retries: {result.avg_retries:.2f}")
+
+if __name__ == "__main__":
+    base_url = "https://jsonplaceholder.typicode.com"
+    yaml_file = "examples/miniapp-benchmark.yaml"
+    
+    run_benchmark(base_url, yaml_file, concurrency=20, repeat=200)
+
+────────────────────────────────────────────────────────────────────────────
+5.4 KỊCH BẢN 4: Chạy nhiều file YAML song song
+────────────────────────────────────────────────────────────────────────────
+
+▸ FILE: my_parallel_runner.py
+
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys
+import os
+import glob
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'pyresttest'))
+
+from pyresttest import resttest
+from pyresttest.retry import RetryConfig
+from pyresttest.binding import Context
+
+def run_single_file(base_url, yaml_file, retry_config):
+    """
+    Worker function: chạy một file YAML
+    """
+    try:
+        context = Context()
+        tests = resttest.read_test_file(yaml_file)
+        
+        test_config = resttest.TestConfig()
+        test_config.retry_config = retry_config
+        
+        failures = 0
+        for test in tests:
+            mytest = test.realize(context)
+            result = resttest.run_test(mytest, test_config, context, base_url)
+            
+            if not result.passed:
+                failures += 1
+        
+        return (yaml_file, failures, None)
+    
+    except Exception as e:
+        return (yaml_file, -1, str(e))
+
+def run_parallel_tests(base_url, pattern, workers=4, max_retries=3):
+    """
+    Chạy nhiều file YAML song song với ProcessPoolExecutor
+    
+    Args:
+        base_url: URL gốc
+        pattern: Glob pattern (vd: "examples/*.yaml")
+        workers: Số worker processes
+        max_retries: Số lần retry tối đa
+    """
+    # Tìm tất cả files khớp pattern
+    yaml_files = glob.glob(pattern)
+    
+    if not yaml_files:
+        print(f"❌ Không tìm thấy file nào khớp: {pattern}")
+        return 1
+    
+    print(f"📁 Tìm thấy {len(yaml_files)} file(s)")
+    print(f"⚙️  Chạy với {workers} worker(s)\n")
+    
+    # Cấu hình retry
+    retry_config = RetryConfig(
+        max_retries=max_retries,
+        backoff_base=0.5,
+        backoff_max=30.0
+    )
+    
+    # Chạy song song
+    total_failures = 0
+    
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        # Submit tất cả files
+        futures = {
+            executor.submit(run_single_file, base_url, f, retry_config): f
+            for f in yaml_files
+        }
+        
+        # Nhận kết quả khi hoàn thành
+        for future in as_completed(futures):
+            filename = futures[future]
+            
+            try:
+                file_path, failures, error = future.result()
+                
+                if error:
+                    print(f"❌ {os.path.basename(file_path)}: ERROR - {error}")
+                    total_failures += 1
+                elif failures > 0:
+                    print(f"⚠️  {os.path.basename(file_path)}: {failures} failure(s)")
+                    total_failures += failures
+                else:
+                    print(f"✅ {os.path.basename(file_path)}: All tests passed")
+            
+            except Exception as e:
+                print(f"❌ {os.path.basename(filename)}: Exception - {e}")
+                total_failures += 1
+    
+    print(f"\n📊 Tổng kết: {total_failures} failure(s) across all files")
+    return total_failures
+
+if __name__ == "__main__":
+    base_url = "https://jsonplaceholder.typicode.com"
+    pattern = "examples/*.yaml"
+    workers = 4
+    
+    failures = run_parallel_tests(base_url, pattern, workers=workers, max_retries=3)
+    sys.exit(min(failures, 1))
+
+▸ CHẠY
+
+python my_parallel_runner.py
+
+────────────────────────────────────────────────────────────────────────────
+5.5 KỊCH BẢN 5: Đọc config từ JSON và chạy (Auto-Runner Pattern)
+────────────────────────────────────────────────────────────────────────────
+
+▸ FILE: my_config.json
+
+{
+  "project_name": "My API Test Suite",
+  "base_url": "https://jsonplaceholder.typicode.com",
+  "global_settings": {
+    "retry": {
+      "max_retries": 3,
+      "backoff_base": 0.5,
+      "backoff_max": 30
+    },
+    "concurrency": {
+      "max_concurrent": 10
+    }
+  },
+  "environments": {
+    "dev": {
+      "base_url": "http://localhost:8000"
+    },
+    "staging": {
+      "base_url": "https://staging-api.example.com"
+    },
+    "prod": {
+      "base_url": "https://api.example.com"
+    }
+  },
+  "test_suites": [
+    {
+      "name": "Smoke Tests",
+      "enabled": true,
+      "files": [
+        "examples/miniapp-test.yaml",
+        "examples/github_api_smoketest.yaml"
+      ]
+    },
+    {
+      "name": "Load Tests",
+      "enabled": false,
+      "files": [
+        "examples/miniapp-benchmark.yaml"
+      ]
+    }
+  ]
+}
+
+▸ FILE: my_json_runner.py
+
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys
+import os
+import json
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'pyresttest'))
+
+from pyresttest import resttest
+from pyresttest.retry import RetryConfig
+from pyresttest.binding import Context
+
+def load_config(config_file):
+    """Đọc JSON config"""
+    with open(config_file, 'r') as f:
+        return json.load(f)
+
+def run_from_json_config(config_file, environment='prod'):
+    """
+    Chạy tests theo cấu hình JSON
+    
+    Args:
+        config_file: Đường dẫn đến file JSON config
+        environment: Môi trường (dev/staging/prod)
+    """
+    # Đọc config
+    config = load_config(config_file)
+    
+    # Lấy base URL theo environment
+    if environment in config.get('environments', {}):
+        base_url = config['environments'][environment]['base_url']
+    else:
+        base_url = config.get('base_url', '')
+    
+    print(f"🌍 Environment: {environment}")
+    print(f"🔗 Base URL: {base_url}\n")
+    
+    # Lấy global settings
+    global_settings = config.get('global_settings', {})
+    retry_settings = global_settings.get('retry', {})
+    concurrency_settings = global_settings.get('concurrency', {})
+    
+    # Tạo retry config
+    retry_config = RetryConfig(
+        max_retries=retry_settings.get('max_retries', 0),
+        backoff_base=retry_settings.get('backoff_base', 0.5),
+        backoff_max=retry_settings.get('backoff_max', 30.0)
+    )
+    
+    # Chạy test suites
+    total_failures = 0
+    
+    for suite in config.get('test_suites', []):
+        if not suite.get('enabled', True):
+            print(f"⏭️  Skipping suite: {suite['name']} (disabled)\n")
+            continue
+        
+        print(f"📦 Running suite: {suite['name']}")
+        
+        for yaml_file in suite.get('files', []):
+            print(f"  📄 {yaml_file}")
+            
+            try:
+                context = Context()
+                tests = resttest.read_test_file(yaml_file)
+                
+                test_config = resttest.TestConfig()
+                test_config.retry_config = retry_config
+                
+                for test in tests:
+                    mytest = test.realize(context)
+                    result = resttest.run_test(mytest, test_config, context, base_url)
+                    
+                    if not result.passed:
+                        total_failures += 1
+                        print(f"    ❌ {test.name}")
+                    else:
+                        print(f"    ✅ {test.name}")
+            
+            except Exception as e:
+                print(f"    ❌ Error: {e}")
+                total_failures += 1
+        
+        print()
+    
+    print(f"📊 Tổng kết: {total_failures} failure(s)")
+    return total_failures
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Run tests from JSON config')
+    parser.add_argument('--config', default='my_config.json', help='JSON config file')
+    parser.add_argument('--env', default='prod', help='Environment (dev/staging/prod)')
+    
+    args = parser.parse_args()
+    
+    failures = run_from_json_config(args.config, args.env)
+    sys.exit(min(failures, 1))
+
+▸ CHẠY
+
+python my_json_runner.py --config my_config.json --env staging
+
+================================================================================
+6. AUTO-RUNNER FRAMEWORK
+================================================================================
+
+PyRestTest đã có sẵn auto-runner trong examples/auto_runner.py
+
+▸ CÁCH SỬ DỤNG
+
+1. Tạo file test_config.json (xem examples/test_config.json)
+2. Chạy:
+   
+   python examples/auto_runner.py --config examples/test_config.json --env dev
+
+▸ TÍNH NĂNG
+
+- Đọc cấu hình từ JSON
+- Hỗ trợ nhiều môi trường (dev/staging/prod)
+- Global settings (retry, concurrency)
+- Per-suite settings override
+- Enable/disable suites
+- Xuất báo cáo kết quả
+
+▸ CẤU TRÚC JSON
+
+{
+  "project_name": "...",
+  "base_url": "...",
+  "global_settings": {
+    "retry": {...},
+    "concurrency": {...}
+  },
+  "environments": {
+    "dev": {...},
+    "staging": {...}
+  },
+  "test_suites": [
+    {
+      "name": "Suite 1",
+      "enabled": true,
+      "files": ["test1.yaml", "test2.yaml"],
+      "settings": {
+        "retry": {...}  // Override global
+      }
+    }
+  ]
+}
+
+================================================================================
+7. LUỒNG XỬ LÝ HOÀN CHỈNH (TỪ YAML → RESULT)
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 1. ĐỌC YAML FILE                                                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│ yaml.safe_load(file) → list of dicts                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 2. PARSE TESTS/BENCHMARKS                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│ - Tạo Test objects từ YAML                                             │
+│ - Tạo Benchmark objects từ YAML                                        │
+│ - Lưu config global                                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. REALIZE TEST (binding context)                                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│ - Thay thế variables (${VAR})                                           │
+│ - Apply templates                                                       │
+│ - Tạo final Test object                                                │
+└─────────────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 4. TẠO HTTP REQUEST                                                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│ - Build URL: base_url + test.url                                       │
+│ - Set method, headers, body                                             │
+│ - Configure timeout                                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 5. THỰC THI REQUEST (với retry nếu có)                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│ if retry_config:                                                        │
+│     response, retries = retry_sync/async(make_request, retry_config)   │
+│ else:                                                                   │
+│     response = make_request()                                           │
+│     retries = 0                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 6. XỬ LÝ RESPONSE                                                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│ - Parse JSON/XML/Text                                                   │
+│ - Extract data (extractors)                                            │
+│ - Update context variables                                             │
+└─────────────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 7. VALIDATE RESPONSE                                                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│ - Check status code                                                     │
+│ - Run validators (jsonpath, regex, compare, etc.)                      │
+│ - Tính pass/fail                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 8. TẠO RESULT OBJECT                                                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│ TestResult:                                                             │
+│   - passed: bool                                                        │
+│   - failures: list                                                      │
+│   - response_code: int                                                  │
+│   - response_body: str                                                  │
+│   - retry_count: int (nếu có retry)                                     │
+│   - response_time: float (ms)                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 9. GOM KẾT QUẢ                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│ - Đếm total tests, passed, failed                                      │
+│ - Thu thập metrics (nếu benchmark)                                     │
+│ - In báo cáo                                                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+8. BEST PRACTICES VÀ TIPS
+================================================================================
+
+▸ KHI NÀO DÙNG CLI, KHI NÀO DÙNG PROGRAMMATIC API?
+
+├─ CLI (pyresttest)
+│  ├─ Quick smoke tests
+│  ├─ CI/CD đơn giản
+│  └─ Chạy thủ công, debug
+│
+└─ Programmatic API (script.py)
+   ├─ Logic phức tạp (conditional execution)
+   ├─ Tích hợp sâu vào Python workflow
+   ├─ Custom reporting
+   ├─ Multi-environment orchestration
+   └─ Dynamic test generation
+
+▸ RETRY CONFIGURATION TIPS
+
+1. CI/CD: max_retries=2-3, backoff_base=0.5
+   → Giảm flakiness nhưng không làm chậm quá nhiều
+
+2. Load test: max_retries=0-1
+   → Giữ đặc tính tải thực tế
+
+3. Monitoring: max_retries=3-5, backoff_max=60
+   → Ưu tiên độ tin cậy
+
+▸ CONCURRENCY TIPS
+
+1. Sync mode:
+   - concurrency = 5-20: Phù hợp cho HTTP/1.1
+   - concurrency > 50: Cân nhắc async mode
+
+2. Async mode:
+   - concurrency = 50-500: Tận dụng I/O không chặn
+   - Cần aiohttp installed
+
+3. Parallel files:
+   - workers = số CPU cores (4-8)
+   - Không nên > số files
+
+▸ YAML ORGANIZATION
+
+my-tests/
+├── config/
+│   ├── dev.yaml       # Config cho dev
+│   ├── staging.yaml   # Config cho staging
+│   └── prod.yaml      # Config cho prod
+├── tests/
+│   ├── auth/
+│   │   ├── login.yaml
+│   │   └── logout.yaml
+│   ├── users/
+│   │   ├── create.yaml
+│   │   └── read.yaml
+│   └── smoke.yaml
+└── benchmarks/
+    ├── load-test.yaml
+    └── stress-test.yaml
+
+▸ LOGGING & DEBUGGING
+
+1. Bật verbose mode trong script:
+
+   test_config.verbose = True
+   test_config.print_bodies = True
+   test_config.print_headers = True
+
+2. Logging retry attempts:
+
+   import logging
+   logging.basicConfig(level=logging.DEBUG)
+   # Sẽ thấy mỗi lần retry + delay
+
+▸ ERROR HANDLING
+
+try:
+    failures = run_tests_from_yaml(base_url, yaml_file)
+except FileNotFoundError:
+    print(f"❌ File not found: {yaml_file}")
+    sys.exit(1)
+except yaml.YAMLError as e:
+    print(f"❌ YAML parse error: {e}")
+    sys.exit(1)
+except Exception as e:
+    print(f"❌ Unexpected error: {e}")
+    sys.exit(1)
+
+▸ CI/CD INTEGRATION
+
+# .github/workflows/api-tests.yml
+- name: Run API Tests
+  run: |
+    python my_test_runner.py --config test_config.json --env staging
+  
+# Hoặc dùng CLI
+- name: Run API Tests (CLI)
+  run: |
+    pyresttest https://staging-api.example.com \
+      --tests "tests/*.yaml" \
+      --workers 4 \
+      --max-retries 3 \
+      --max-concurrency 10
+
+================================================================================
+KẾT LUẬN
+================================================================================
+
+Tài liệu này đã trình bày:
+
+✅ Cơ chế hoạt động chi tiết của các module nâng cấp
+   - Retry (exponential backoff, should_retry logic)
+   - Performance Sync (ThreadPoolExecutor, requests.Session)
+   - Performance Async (asyncio.Semaphore, aiohttp)
+   - Parallel Execution (ProcessPoolExecutor, glob)
+
+✅ Thư viện và dependencies sử dụng
+   - Built-in: time, asyncio, concurrent.futures, glob
+   - External: requests, aiohttp, pyyaml
+
+✅ Cách PyRestTest parse và xử lý YAML
+   - Cấu trúc YAML: test/benchmark/config
+   - Luồng: YAML → parse → realize → execute → validate → result
+
+✅ 5 kịch bản sử dụng Programmatic API
+   - Chạy test đơn giản
+   - Chạy với retry
+   - Chạy benchmark với concurrency
+   - Chạy song song nhiều files
+   - Chạy từ JSON config (auto-runner)
+
+✅ Best practices và tips
+   - Khi nào dùng CLI vs Script
+   - Retry/Concurrency configuration
+   - YAML organization
+   - CI/CD integration
+
+BẠN CÓ THỂ:
+1. Dùng CLI cho quick tests: `pyresttest URL test.yaml --max-retries 3`
+2. Viết script.py riêng để tích hợp sâu vào workflow Python
+3. Dùng auto-runner với JSON config cho multi-environment
+
+HẾT
+================================================================================

@@ -1,5 +1,8 @@
 ================================================================================
-BÁO CÁO NÂNG CẤP PYRESTTEST: TỪ CÔNG CỤ KIỂM THỬ CƠ BẢN ĐẾN KHUNG LÀM VIỆC SẴN SÀNG PRODUCTION
+BÁO C5.3 Chạy song song nhiều file test (đa tiến trình)
+- Thêm chạy song song ở cấp "file test" bằng `ProcessPoolExecutor`.
+- CLI mới: `--tests` (danh sách/glob) và `--workers` (số worker processes).
+- Cơ chế: mỗi worker process chạy một file YAML; bên trong mỗi file vẫn áp dụng concurrency của performance.ÂNG CẤP PYRESTTEST: TỪ CÔNG CỤ KIỂM THỬ CƠ BẢN ĐẾN KHUNG LÀM VIỆC SẴN SÀNG PRODUCTION
 ================================================================================
 
 Ngày: 10/12/2025
@@ -97,8 +100,8 @@ Mục tiêu nâng cấp PyRestTest là tăng độ tin cậy và linh hoạt khi
   `pyresttest https://api.example.com examples/miniapp-test.yaml --max-retries 3 --max-concurrency 10`
 - Ví dụ 2: Chạy nhiều file tuần tự
   `pyresttest https://api.example.com --tests "examples/*.yaml"`
-- Ví dụ 3: Chạy nhiều file song song 4 tiến trình
-  `pyresttest https://api.example.com --tests "examples/*.yaml" --parallel-suites 4`
+- Ví dụ 3: Chạy nhiều file song song với 4 worker processes
+  `pyresttest https://api.example.com --tests "examples/*.yaml" --workers 4`
 
 6.2 YAML (gợi ý phần performance)
 ```
@@ -367,3 +370,43 @@ N) PHỤ LỤC: BẢN ĐỒ THAY ĐỔI FILE → CHỨC NĂNG
 
 KẾT THÚC PHẦN MỞ RỘNG
 ================================================================================
+
+ """ Runs everything needed to execute from the command line, so main method is callable without arg parsing """
+    parser = OptionParser(
+        usage="usage: %prog base_url test_filename.yaml [options] ")
+    parser.add_option(u"--print-bodies", help="Print all response bodies",
+                      action="store", type="string", dest="print_bodies")
+    parser.add_option(u"--print-headers", help="Print all response headers",
+                      action="store", type="string", dest="print_headers")
+    parser.add_option(u"--log", help="Logging level",
+                      action="store", type="string")
+    parser.add_option(u"--interactive", help="Interactive mode",
+                      action="store", type="string")
+    parser.add_option(
+        u"--url", help="Base URL to run tests against", action="store", type="string")
+    parser.add_option(u"--test", help="Test file to use",
+                      action="store", type="string")
+    parser.add_option(u'--import_extensions',
+                      help='Extensions to import, separated by semicolons', action="store", type="string")
+    parser.add_option(
+        u'--vars', help='Variables to set, as a YAML dictionary', action="store", type="string")
+    parser.add_option(u'--verbose', help='Put cURL into verbose mode for extra debugging power',
+                      action='store_true', default=False, dest="verbose")
+    parser.add_option(u'--ssl-insecure', help='Disable cURL host and peer cert verification',
+                      action='store_true', default=False, dest="ssl_insecure")
+    parser.add_option(u'--absolute-urls', help='Enable absolute URLs in tests instead of relative paths',
+                      action="store_true", dest="absolute_urls")
+    parser.add_option(u'--skip_term_colors', help='Turn off the output term colors',
+                      action='store_true', default=False, dest="skip_term_colors")
+    parser.add_option(u'--max-retries', help='Maximum number of retry attempts for failed requests (default: 0)',
+                      action='store', type='int', default=0, dest='max_retries')
+    parser.add_option(u'--retry-backoff-base', help='Base delay in seconds for exponential backoff (default: 0.5)',
+                      action='store', type='float', default=0.5, dest='retry_backoff_base')
+    parser.add_option(u'--retry-backoff-max', help='Maximum delay in seconds between retries (default: 30)',
+                      action='store', type='float', default=30.0, dest='retry_backoff_max')
+    parser.add_option(u'--max-concurrency', help='Maximum concurrent requests for performance tests (default: auto)',
+                      action='store', type='int', default=None, dest='max_concurrency')
+    parser.add_option(u'--tests', help='Comma-separated list of test YAML files; globs allowed (e.g. "examples/*.yaml")',
+                      action='store', type='string', default=None, dest='tests')
+    parser.add_option(u'--parallel-suites', help='Number of processes to run test files in parallel',
+                      action='store', type='int', default=1, dest='parallel_suites')

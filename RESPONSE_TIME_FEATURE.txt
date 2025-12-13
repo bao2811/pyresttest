@@ -1,0 +1,434 @@
+================================================================================
+TÍNH NĂNG MỚI: HIỂN THỊ THỜI GIAN PHẢN HỒI (RESPONSE TIME)
+================================================================================
+
+Ngày: 12/12/2025
+Tác giả: bao2811
+Mục đích: Thêm hiển thị thời gian phản hồi của mỗi request trong kết quả test
+
+================================================================================
+1. TỔNG QUAN
+================================================================================
+
+▸ VẤN ĐỀ
+  - Trước đây khi chạy test, PyRestTest chỉ hiển thị:
+    • Tên test
+    • URL
+    • Group
+    • HTTP Status Code (nếu thất bại)
+  - KHÔNG hiển thị thời gian phản hồi (response time)
+  - Khó đánh giá performance của từng test riêng lẻ
+
+▸ GIẢI PHÁP
+  - Thêm đo thời gian phản hồi cho mỗi request
+  - Lưu vào TestResponse object
+  - Hiển thị trong log output (ms - milliseconds)
+
+================================================================================
+2. THAY ĐỔI KỸ THUẬT
+================================================================================
+
+2.1 CLASS TestResponse (pyresttest/resttest.py, line 162)
+────────────────────────────────────────────────────────────────────────────
+
+TRƯỚC:
+```python
+class TestResponse:
+    """ Encapsulates everything about a test response """
+    test = None
+    response_code = None
+    body = None
+    passed = False
+    response_headers = None
+    failures = None
+
+    def __init__(self):
+        self.failures = list()
+```
+
+SAU:
+```python
+class TestResponse:
+    """ Encapsulates everything about a test response """
+    test = None
+    response_code = None
+    body = None
+    passed = False
+    response_headers = None
+    failures = None
+    response_time = None  # Response time in milliseconds  ← MỚI
+
+    def __init__(self):
+        self.failures = list()
+        self.response_time = 0  ← MỚI
+```
+
+▸ THAY ĐỔI:
+  - Thêm thuộc tính response_time (float, đơn vị: milliseconds)
+  - Khởi tạo mặc định = 0 trong __init__()
+
+────────────────────────────────────────────────────────────────────────────
+2.2 HÀM run_test() - ĐO THỜI GIAN (pyresttest/resttest.py, line 390)
+────────────────────────────────────────────────────────────────────────────
+
+TRƯỚC:
+```python
+    if mytest.delay > 0:
+        print("Delaying for %ds" % mytest.delay)
+        time.sleep(mytest.delay)
+
+    try:
+        curl.perform()  # Run the actual call
+    except Exception as e:
+        trace = traceback.format_exc()
+        result.failures.append(Failure(...))
+        result.passed = False
+        curl.close()
+        return result
+```
+
+SAU:
+```python
+    if mytest.delay > 0:
+        print("Delaying for %ds" % mytest.delay)
+        time.sleep(mytest.delay)
+
+    # Measure response time  ← MỚI
+    start_time = time.time()  ← MỚI
+    
+    try:
+        curl.perform()  # Run the actual call
+    except Exception as e:
+        trace = traceback.format_exc()
+        result.failures.append(Failure(...))
+        result.passed = False
+        result.response_time = (time.time() - start_time) * 1000  ← MỚI (ms)
+        curl.close()
+        return result
+
+    # Calculate response time in milliseconds  ← MỚI
+    result.response_time = (time.time() - start_time) * 1000  ← MỚI
+```
+
+▸ THAY ĐỔI:
+  1. Bắt đầu đo thời gian NGAY TRƯỚC curl.perform()
+  2. Tính thời gian = (time.time() - start_time) * 1000
+     • time.time() trả về seconds
+     • Nhân 1000 để convert sang milliseconds
+  3. Lưu vào result.response_time
+  4. Đảm bảo cả trường hợp SUCCESS và EXCEPTION đều có response_time
+
+────────────────────────────────────────────────────────────────────────────
+2.3 HIỂN THỊ THỜI GIAN TRONG LOG (pyresttest/resttest.py, line 712-732)
+────────────────────────────────────────────────────────────────────────────
+
+TRƯỚC (Test Failed):
+```python
+logger.error('Test Failed: ' + test.name + " URL=" + result.test.url +
+             " Group=" + test.group + " HTTP Status Code: " + str(result.response_code))
+```
+
+SAU (Test Failed):
+```python
+logger.error('Test Failed: ' + test.name + " URL=" + result.test.url +
+             " Group=" + test.group + " HTTP Status Code: " + str(result.response_code) +
+             " Response Time: " + "{:.2f}ms".format(result.response_time))  ← MỚI
+```
+
+TRƯỚC (Test Succeeded):
+```python
+logger.info('Test Succeeded: ' + test.name +
+            " URL=" + test.url + " Group=" + test.group)
+```
+
+SAU (Test Succeeded):
+```python
+logger.info('Test Succeeded: ' + test.name +
+            " URL=" + test.url + " Group=" + test.group +
+            " Response Time: " + "{:.2f}ms".format(result.response_time))  ← MỚI
+```
+
+▸ THAY ĐỔI:
+  - Thêm " Response Time: XXX.XXms" vào cuối log message
+  - Định dạng: {:.2f}ms → hiển thị 2 chữ số thập phân
+  - Áp dụng cho CẢ test PASS và FAIL
+
+================================================================================
+3. VÍ DỤ OUTPUT
+================================================================================
+
+3.1 TRƯỚC (KHÔNG CÓ RESPONSE TIME)
+────────────────────────────────────────────────────────────────────────────
+```
+INFO:pyresttest.resttest:Test Succeeded: Get user URL=/users/1 Group=Default
+INFO:pyresttest.resttest:Test Succeeded: Get posts URL=/posts Group=Default
+ERROR:pyresttest.resttest:Test Failed: Create post URL=/posts Group=Default HTTP Status Code: 201
+```
+
+3.2 SAU (CÓ RESPONSE TIME)
+────────────────────────────────────────────────────────────────────────────
+```
+INFO:pyresttest.resttest:Test Succeeded: Get user URL=/users/1 Group=Default Response Time: 145.23ms
+INFO:pyresttest.resttest:Test Succeeded: Get posts URL=/posts Group=Default Response Time: 89.47ms
+ERROR:pyresttest.resttest:Test Failed: Create post URL=/posts Group=Default HTTP Status Code: 201 Response Time: 312.58ms
+```
+
+▸ LỢI ÍCH:
+  - Thấy ngay test nào chậm, test nào nhanh
+  - Dễ phát hiện performance bottleneck
+  - Hữu ích cho debugging và optimization
+
+================================================================================
+4. CÁCH SỬ DỤNG
+================================================================================
+
+4.1 CLI - Chạy test bình thường
+────────────────────────────────────────────────────────────────────────────
+```bash
+# Chạy một file test
+pyresttest https://jsonplaceholder.typicode.com test_response_time_demo.yaml
+
+# Kết quả sẽ tự động hiển thị response time
+```
+
+4.2 CLI - Với log level INFO để thấy tất cả
+────────────────────────────────────────────────────────────────────────────
+```bash
+# Hiển thị log INFO để thấy cả test PASS
+pyresttest https://jsonplaceholder.typicode.com test_response_time_demo.yaml --log INFO
+
+# Output:
+# INFO:pyresttest.resttest:Test Succeeded: Test 1 - Get User URL=/users/1 Group=Default Response Time: 123.45ms
+# INFO:pyresttest.resttest:Test Succeeded: Test 2 - Get Posts URL=/posts Group=Default Response Time: 98.76ms
+# ERROR:pyresttest.resttest:Test Failed: Test 3 - Create Post URL=/posts Group=Default HTTP Status Code: 201 Response Time: 234.56ms
+```
+
+4.3 Programmatic API
+────────────────────────────────────────────────────────────────────────────
+```python
+from pyresttest import resttest
+from pyresttest.binding import Context
+
+# Chạy test
+result = resttest.run_test(mytest, test_config, context)
+
+# Truy cập response time
+print(f"Response time: {result.response_time:.2f}ms")
+
+# Ví dụ: kiểm tra performance threshold
+if result.response_time > 500:  # 500ms
+    print("WARNING: Slow response!")
+```
+
+4.4 So sánh với Benchmark Mode
+────────────────────────────────────────────────────────────────────────────
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ REGULAR TEST (với response_time)                                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│ - Chạy mỗi test 1 lần                                                   │
+│ - Hiển thị response_time cho test đơn lẻ                                │
+│ - Phù hợp: Functional testing, smoke testing                            │
+│ - Output: "Response Time: 123.45ms"                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BENCHMARK MODE (với min/max/avg)                                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│ - Chạy test nhiều lần (repeat: 100)                                     │
+│ - Hiển thị min/max/avg/percentile                                       │
+│ - Phù hợp: Load testing, performance testing                            │
+│ - Output: "Min: 45ms, Max: 678ms, Avg: 123ms"                           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+5. KỸ THUẬT ĐO THỜI GIAN
+================================================================================
+
+5.1 Phạm vi đo
+────────────────────────────────────────────────────────────────────────────
+```
+start_time = time.time()
+    ↓
+curl.perform()  ← GỬI REQUEST + NHẬN RESPONSE
+    ↓
+end_time = time.time()
+response_time = (end_time - start_time) * 1000  # ms
+```
+
+▸ THỜI GIAN BAO GỒM:
+  ✅ DNS lookup
+  ✅ TCP connection
+  ✅ SSL/TLS handshake (nếu HTTPS)
+  ✅ Gửi request (upload)
+  ✅ Server processing time
+  ✅ Nhận response (download)
+
+▸ THỜI GIAN KHÔNG BAO GỒM:
+  ❌ Test setup/teardown
+  ❌ Validation/parsing sau khi nhận response
+  ❌ Delay trước test (mytest.delay)
+
+5.2 Độ chính xác
+────────────────────────────────────────────────────────────────────────────
+- Sử dụng time.time() từ Python stdlib
+- Độ chính xác: ~1 microsecond trên hầu hết hệ thống
+- Hiển thị: 2 chữ số thập phân (0.01ms = 10 microseconds)
+
+5.3 Xử lý lỗi
+────────────────────────────────────────────────────────────────────────────
+- Nếu curl.perform() throw exception:
+  • Vẫn tính response_time từ start → exception
+  • Đảm bảo luôn có giá trị response_time
+  • Không để None hoặc uninitialized
+
+================================================================================
+6. TÍCH HỢP VỚI CÁC TÍNH NĂNG KHÁC
+================================================================================
+
+6.1 Tích hợp với Retry
+────────────────────────────────────────────────────────────────────────────
+```
+Test với retry (max_retries=3):
+  Attempt 1: FAIL (200ms)
+  Attempt 2: FAIL (180ms)  
+  Attempt 3: SUCCESS (150ms)
+  
+Response Time hiển thị: 150ms (của lần cuối cùng)
+```
+
+▸ LƯU Ý:
+  - response_time chỉ là của lần thực thi CUỐI CÙNG
+  - KHÔNG phải tổng thời gian của tất cả retry
+  - Nếu muốn tổng thời gian, cần tính riêng trong retry logic
+
+6.2 Tích hợp với Parallel Execution
+────────────────────────────────────────────────────────────────────────────
+Khi chạy nhiều file song song (--workers 4):
+  - Mỗi test trong mỗi file có response_time riêng
+  - Response time KHÔNG bị ảnh hưởng bởi parallel execution
+  - Mỗi process đo thời gian độc lập
+
+6.3 Tích hợp với Performance Mode
+────────────────────────────────────────────────────────────────────────────
+- Regular test: response_time (1 lần chạy)
+- Performance/Benchmark: elapsed_ms cho mỗi lần, sau đó tính min/max/avg
+- Cả hai đều sử dụng cùng phương pháp đo (time.time())
+
+================================================================================
+7. USE CASES
+================================================================================
+
+7.1 Smoke Testing với SLA check
+────────────────────────────────────────────────────────────────────────────
+```python
+# Chạy smoke test và kiểm tra SLA
+results = run_tests(yaml_file)
+
+for result in results:
+    if result.response_time > 500:  # SLA: < 500ms
+        alert(f"SLA violation: {result.test.name} took {result.response_time}ms")
+```
+
+7.2 CI/CD Performance Regression Detection
+────────────────────────────────────────────────────────────────────────────
+```bash
+# Chạy test, lưu response time vào file
+pyresttest https://api.example.com tests.yaml --log INFO > results.log
+
+# Parse response times và so sánh với baseline
+grep "Response Time:" results.log | awk '{print $NF}' | compare_with_baseline.sh
+```
+
+7.3 Monitoring & Alerting
+────────────────────────────────────────────────────────────────────────────
+```python
+# Chạy định kỳ (mỗi 5 phút)
+while True:
+    result = run_test(health_check_test)
+    
+    # Gửi metric lên monitoring system
+    send_metric("api.response_time", result.response_time)
+    
+    # Alert nếu quá chậm
+    if result.response_time > 1000:
+        send_alert("API slow: {result.response_time}ms")
+    
+    time.sleep(300)
+```
+
+================================================================================
+8. SO SÁNH VỚI CÁC CÔNG CỤ KHÁC
+================================================================================
+
+┌────────────┬──────────────────────┬────────────────────────────────────┐
+│ Tool       │ Response Time Display│ Chi tiết                            │
+├────────────┼──────────────────────┼────────────────────────────────────┤
+│ PyRestTest │ ✅ XXX.XXms          │ Hiển thị cho mỗi test              │
+│ (Sau fix)  │                      │                                    │
+├────────────┼──────────────────────┼────────────────────────────────────┤
+│ Postman    │ ✅ XXXms             │ Hiển thị trong test runner         │
+├────────────┼──────────────────────┼────────────────────────────────────┤
+│ curl       │ ❌ (cần -w)          │ Cần thêm --write-out format        │
+├────────────┼──────────────────────┼────────────────────────────────────┤
+│ httpie     │ ❌                   │ Không hiển thị mặc định            │
+├────────────┼──────────────────────┼────────────────────────────────────┤
+│ requests   │ ❌                   │ Cần tự đo bằng time.time()         │
+└────────────┴──────────────────────┴────────────────────────────────────┘
+
+================================================================================
+9. ROADMAP & CẢI TIẾN TƯƠNG LAI
+================================================================================
+
+9.1 Đã thực hiện (v1.0)
+────────────────────────────────────────────────────────────────────────────
+✅ Thêm response_time vào TestResponse
+✅ Đo thời gian trong run_test()
+✅ Hiển thị trong log output (INFO và ERROR)
+✅ Xử lý cả trường hợp success và exception
+
+9.2 Cải tiến tiềm năng (v1.1+)
+────────────────────────────────────────────────────────────────────────────
+□ Breakdown timing (DNS, Connect, SSL, Transfer, etc.)
+  - Sử dụng curl.getinfo(pycurl.NAMELOOKUP_TIME, ...) để lấy từng giai đoạn
+  
+□ Response time percentiles cho test suite
+  - Tính p50, p95, p99 của tất cả tests trong suite
+  
+□ Export response times ra JSON/CSV
+  - Dễ phân tích và visualize với công cụ khác
+  
+□ Response time alerts/warnings
+  - Tích hợp threshold checking ngay trong test definition
+  - YAML: `max_response_time: 500`
+  
+□ Histogram/chart cho response times
+  - ASCII histogram trong terminal output
+  
+□ Tích hợp với retry: track response time của tất cả attempts
+  - Lưu list [200ms, 180ms, 150ms] thay vì chỉ lần cuối
+
+================================================================================
+10. KẾT LUẬN
+================================================================================
+
+▸ TỔNG KẾT
+  - Đã bổ sung hiển thị thời gian phản hồi cho mỗi test
+  - 3 thay đổi chính:
+    1. TestResponse.response_time (thuộc tính mới)
+    2. Đo thời gian trong run_test() (start → end)
+    3. Hiển thị trong log (format: XXX.XXms)
+  
+▸ TÁC ĐỘNG
+  - Tăng khả năng quan sát (observability)
+  - Dễ phát hiện performance issues
+  - Không ảnh hưởng đến logic test hiện tại
+  - Tương thích ngược hoàn toàn
+
+▸ SỬ DỤNG
+  - Tự động: Chỉ cần chạy test bình thường
+  - CLI: Thêm --log INFO để thấy tất cả response times
+  - API: Truy cập result.response_time trong code
+
+HẾT
+================================================================================

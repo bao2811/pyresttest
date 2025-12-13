@@ -169,9 +169,11 @@ class TestResponse:
     passed = False
     response_headers = None
     failures = None
+    response_time = None  # Response time in milliseconds
 
     def __init__(self):
         self.failures = list()
+        self.response_time = 0
 
     def __str__(self):
         return json.dumps(self, default=safe_to_json)
@@ -388,6 +390,9 @@ def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None,
         print("Delaying for %ds" % mytest.delay)
         time.sleep(mytest.delay)
 
+    # Measure response time
+    start_time = time.time()
+    
     try:
         curl.perform()  # Run the actual call
     except Exception as e:
@@ -397,8 +402,12 @@ def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None,
         result.failures.append(Failure(message="Curl Exception: {0}".format(
             e), details=trace, failure_type=validators.FAILURE_CURL_EXCEPTION))
         result.passed = False
+        result.response_time = (time.time() - start_time) * 1000  # Convert to milliseconds
         curl.close()
         return result
+
+    # Calculate response time in milliseconds
+    result.response_time = (time.time() - start_time) * 1000
 
     # Retrieve values
     result.body = body.getvalue()
@@ -709,7 +718,8 @@ def run_testsets(testsets, retry_config=None, max_concurrency=None):
             if not result.passed:  # Print failure, increase failure counts for that test group
                 # Use result test URL to allow for templating
                 logger.error('Test Failed: ' + test.name + " URL=" + result.test.url +
-                             " Group=" + test.group + " HTTP Status Code: " + str(result.response_code))
+                             " Group=" + test.group + " HTTP Status Code: " + str(result.response_code) +
+                             " Response Time: " + "{:.2f}ms".format(result.response_time))
 
                 # Print test failure reasons
                 if result.failures:
@@ -725,7 +735,8 @@ def run_testsets(testsets, retry_config=None, max_concurrency=None):
 
             else:  # Test passed, print results
                 logger.info('Test Succeeded: ' + test.name +
-                            " URL=" + test.url + " Group=" + test.group)
+                            " URL=" + test.url + " Group=" + test.group +
+                            " Response Time: " + "{:.2f}ms".format(result.response_time))
 
             # Add results for this test group to the resultset
             group_results[test.group].append(result)
@@ -1005,13 +1016,13 @@ def main(args):
     if not test_list:
         raise Exception("No test files specified. Use --test or --tests")
 
-    parallel_suites = args.get('parallel_suites', 1)
+    workers = args.get('workers', 1)
 
-    if len(test_list) == 1 and (not parallel_suites or parallel_suites <= 1):
+    if len(test_list) == 1 and (not workers or workers <= 1):
         failures = execute_tests_with_args(args)
         sys.exit(failures)
     else:
-        failures = execute_multiple_files(args, test_list, parallel_suites=parallel_suites)
+        failures = execute_multiple_files(args, test_list, parallel_suites=workers)
         sys.exit(failures)
 
 
@@ -1053,8 +1064,8 @@ def parse_command_line_args(args_in):
                       action='store', type='int', default=None, dest='max_concurrency')
     parser.add_option(u'--tests', help='Comma-separated list of test YAML files; globs allowed (e.g. "examples/*.yaml")',
                       action='store', type='string', default=None, dest='tests')
-    parser.add_option(u'--parallel-suites', help='Number of processes to run test files in parallel',
-                      action='store', type='int', default=1, dest='parallel_suites')
+    parser.add_option(u'--workers', help='Number of parallel worker processes to run test files concurrently (default: 1)',
+                      action='store', type='int', default=1, dest='workers')
 
     (args, unparsed_args) = parser.parse_args(args_in)
     args = vars(args)

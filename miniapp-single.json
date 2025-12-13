@@ -1,0 +1,1 @@
+{"aggregates": [["speed_upload", "median", 0.0], ["speed_download", "median", 15953810.0], ["redirect_time", "mean", 0.0]], "results": {}, "name": "Get single person", "group": "Default", "failures": 0}

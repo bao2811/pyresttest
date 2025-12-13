@@ -1,0 +1,23 @@
+---
+- config:
+    - testset: "Response Time Demo"
+
+- test:
+    - name: "Test 1 - Get User"
+    - url: "/users/1"
+    - method: "GET"
+    - expected_status: [200]
+
+- test:
+    - name: "Test 2 - Get Posts"
+    - url: "/posts"
+    - method: "GET"
+    - expected_status: [200]
+
+- test:
+    - name: "Test 3 - Create Post (will fail - demo)"
+    - url: "/posts"
+    - method: "POST"
+    - headers: { Content-Type: "application/json" }
+    - body: '{"title": "Test", "body": "Demo", "userId": 1}'
+    - expected_status: [999] # Intentionally wrong to show error with response time

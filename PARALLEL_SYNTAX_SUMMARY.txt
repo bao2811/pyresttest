@@ -1,0 +1,77 @@
+================================================================================
+TÓM TẮT: CÚ PHÁP CHẠY PARALLEL TESTS VỚI PYRESTTEST
+================================================================================
+
+❓ CÂU HỎI:
+pyresttest http://localhost:8000 api_test/suites/*.yaml --workers 5
+→ Dự án đã hỗ trợ lệnh này chưa?
+
+✅ ĐÁP ÁN: HOÀN TOÀN HỖ TRỢ!
+
+Nhưng cần sửa cú pháp một chút:
+
+================================================================================
+CÚ PHÁP ĐÚNG
+================================================================================
+
+CÁCH 1: Dùng --url và --tests (KHUYẾN NGHỊ)
+────────────────────────────────────────────────────────────────────────────
+pyresttest --url http://localhost:8000 --tests "api_test/suites/*.yaml" --workers 5
+
+CÁCH 2: URL positional + --tests
+────────────────────────────────────────────────────────────────────────────
+pyresttest http://localhost:8000 --tests "api_test/suites/*.yaml" --workers 5
+
+⚠️  LƯU Ý: 
+- Phải có flag --tests trước glob pattern
+- Nên đặt glob pattern trong dấu ngoặc kép "..."
+
+================================================================================
+VÍ DỤ THỰC TẾ
+================================================================================
+
+# Chạy tất cả files .yaml trong thư mục với 5 workers
+pyresttest --url http://localhost:8000 --tests "api_test/suites/*.yaml" --workers 5
+
+# Kết hợp với retry và concurrency
+pyresttest --url http://localhost:8000 \
+  --tests "api_test/suites/*.yaml" \
+  --workers 5 \
+  --max-retries 3 \
+  --max-concurrency 10 \
+  --log INFO
+
+# Chạy với public API để test
+pyresttest --url https://jsonplaceholder.typicode.com \
+  --tests "examples/*.yaml" \
+  --workers 4 \
+  --log INFO
+
+================================================================================
+KẾT QUẢ KIỂM TRA
+================================================================================
+
+✅ ĐÃ TEST THÀNH CÔNG với lệnh:
+.venv/bin/pyresttest --url http://localhost:8000 --tests "examples/*.yaml" --workers 4
+
+Output cho thấy:
+- ✅ Chạy song song nhiều files
+- ✅ Hiển thị Response Time: XXX.XXms
+- ✅ Workers hoạt động đúng
+- ✅ Tất cả tính năng nâng cấp đều hoạt động
+
+================================================================================
+TỔNG KẾT
+================================================================================
+
+DỰ ÁN ĐÃ HỖ TRỢ ĐẦY ĐỦ:
+✅ --tests: Chạy nhiều files (glob pattern hoặc comma-separated)
+✅ --workers: Chạy song song với N processes
+✅ --max-retries: Retry khi thất bại
+✅ --max-concurrency: Giới hạn concurrent requests
+✅ Response Time: Hiển thị thời gian phản hồi mỗi test
+
+Xem file CLI_PARALLEL_EXECUTION_GUIDE.txt để biết thêm chi tiết!
+
+HẾT
+================================================================================
