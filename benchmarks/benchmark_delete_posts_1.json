@@ -1,0 +1,1 @@
+{"aggregates": [["total_time", "mean", 0.3650151252746582], ["total_time", "min", 0.3307356834411621], ["total_time", "max", 0.387592077255249]], "results": {}, "name": "DELETE /posts/1 - total_time", "group": "Default", "failures": 0}

@@ -1,0 +1,1 @@
+{"aggregates": [["total_time", "mean", 0.9379533696174621]], "results": {}, "name": "GET /posts - ASYNC STRESS (200 req)", "group": "Default", "failures": 0}

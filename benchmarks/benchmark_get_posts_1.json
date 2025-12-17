@@ -1,0 +1,1 @@
+{"aggregates": [["total_time", "mean", 0.15553131103515624], ["total_time", "min", 0.15432357788085938], ["total_time", "max", 0.1565866470336914]], "results": {}, "name": "GET /posts/1 - total_time", "group": "Default", "failures": 0}

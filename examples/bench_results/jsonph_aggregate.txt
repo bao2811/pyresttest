@@ -1,0 +1,15 @@
+Aggregate benchmark summary
+{
+  "runs": 3,
+  "sync": {
+    "wall_sec_mean": 68.65904823939006,
+    "wall_sec_stdev": 13.063781297320634,
+    "throughput_mean": 3.0089594572453353
+  },
+  "async": {
+    "wall_sec_mean": 1.9660906791687012,
+    "wall_sec_stdev": 0.7666854417195827,
+    "throughput_mean": 115.52378700586907
+  },
+  "speedup_mean": 34.921608126650774
+}

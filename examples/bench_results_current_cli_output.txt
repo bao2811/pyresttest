@@ -1,0 +1,25 @@
+INFO:Retry enabled: max_retries=3, backoff_base=0.5s, backoff_max=30.0s
+INFO:Max concurrency set to: 10
+INFO:Test Succeeded: GET /posts - list posts URL=https://jsonplaceholder.typicode.com/posts Group=Default Response Time: 287.33ms
+INFO:Test Succeeded: GET /posts/1 - single post URL=https://jsonplaceholder.typicode.com/posts/1 Group=Default Response Time: 135.38ms
+INFO:Test Succeeded: GET /posts/1/comments - comments for post 1 URL=https://jsonplaceholder.typicode.com/posts/1/comments Group=Default Response Time: 59.69ms
+INFO:Test Succeeded: GET /comments?postId=1 - query comments URL=https://jsonplaceholder.typicode.com/comments?postId=1 Group=Default Response Time: 177.17ms
+INFO:Test Succeeded: POST /posts - create post URL=https://jsonplaceholder.typicode.com/posts Group=Default Response Time: 644.96ms
+INFO:Test Succeeded: PUT /posts/1 - replace post URL=https://jsonplaceholder.typicode.com/posts/1 Group=Default Response Time: 698.51ms
+INFO:Test Succeeded: PATCH /posts/1 - patch post URL=https://jsonplaceholder.typicode.com/posts/1 Group=Default Response Time: 582.52ms
+INFO:Test Succeeded: DELETE /posts/1 - delete post URL=https://jsonplaceholder.typicode.com/posts/1 Group=Default Response Time: 676.47ms
+INFO:Benchmark Starting: Benchmark GET /posts Group: Default
+INFO:Warmup:  started
+INFO:Warmup:  finished
+INFO:Benchmark:  starting
+INFO:Benchmark:  ending
+INFO:Benchmark Done: Benchmark GET /posts Group: Default
+INFO:Benchmark Starting: Benchmark POST /posts Group: Default
+INFO:Warmup:  started
+INFO:Warmup:  finished
+INFO:Benchmark:  starting
+INFO:Benchmark:  ending
+INFO:Benchmark Done: Benchmark POST /posts Group: Default
+{"aggregates": [["total_time", "mean", 0.0763908], ["total_time", "median", 0.0443245], ["speed_download", "median", 620916.0]], "results": {}, "name": "Benchmark GET /posts", "group": "Default", "failures": 0}
+{"aggregates": [["total_time", "mean", 0.29068466666666665], ["total_time", "p50", 0.2411065], ["total_time", "p95", 0.5927581], ["total_time", "p99", 0.62765238]], "results": {}, "name": "Benchmark POST /posts", "group": "Default", "failures": 0}
+[92mTest Group Default SUCCEEDED: : 8/8 Tests Passed![0m

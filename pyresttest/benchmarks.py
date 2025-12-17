@@ -83,6 +83,10 @@ AGGREGATES = {
     'mean_harmonic':  # Harmonic mean, better predicts average of rates: http://en.wikipedia.org/wiki/Harmonic_mean
     lambda x: 1.0 / (sum([1.0 / float(y) for y in x]) / float(len(x))),
     'median': lambda x: median(x),
+    # Backwards-compatible percentile names used historically (p50/p95/p99)
+    'p50': lambda x: percentile(x, 50),
+    'p95': lambda x: percentile(x, 95),
+    'p99': lambda x: percentile(x, 99),
     'std_deviation': lambda x: std_deviation(x),
     'sum': lambda x: sum(x),
     'total': lambda x: sum(x)
@@ -100,6 +104,21 @@ def median(array):
         return float((mysorted[middle] + mysorted[middle - 1])) / 2
     else:
         return mysorted[middle]
+
+
+def percentile(array, p):
+    """Return the p-th percentile (linear interpolation) of array"""
+    if not array:
+        return None
+    s = sorted(array)
+    k = (len(s) - 1) * (p / 100.0)
+    f = int(math.floor(k))
+    c = int(math.ceil(k))
+    if f == c:
+        return float(s[int(k)])
+    d0 = s[f] * (c - k)
+    d1 = s[c] * (k - f)
+    return float(d0 + d1)
 
 
 def std_deviation(array):
@@ -131,6 +150,10 @@ class Benchmark(Test):
     benchmark_runs = 100  # Times call is executed to generate benchmark results
     output_format = u'csv'
     output_file = None
+    # Allow reusing connections by default (keep-alive). Set to False to forbid reuse.
+    allow_connection_reuse = True
+    # Performance mode: 'sync' (default) or 'async'
+    mode = 'sync'
 
     # Metrics to gather, both raw and aggregated
     metrics = set()
@@ -202,8 +225,20 @@ def realize_partial(self, context=None):
 def configure_curl(self, timeout=tests.DEFAULT_TIMEOUT, context=None, curl_handle=None):
     curl = super().configure_curl(self, timeout=timeout,
                                   context=context, curl_handle=curl_handle)
-    # Simulate results from different users hitting server
-    curl.setopt(pycurl.FORBID_REUSE, 1)
+    # Respect benchmark's preference for connection reuse. By default we allow
+    # reusing connections which enables keep-alive and avoids TCP/TLS handshake
+    # per request. To simulate separate users/clients set Benchmark.allow_connection_reuse=False
+    try:
+        if getattr(self, 'allow_connection_reuse', True):
+            # allow reuse: ensure FORBID_REUSE is not set (default behavior)
+            pass
+        else:
+            # forbid reuse: prevent keep-alive
+            curl.setopt(pycurl.FORBID_REUSE, 1)
+    except Exception:
+        # If pycurl doesn't support an option or any other error occurs,
+        # fall back to default behavior (allow reuse)
+        pass
     return curl
 
 
@@ -222,6 +257,41 @@ def parse_benchmark(base_url, node):
             benchmark.warmup_runs = int(value)
         elif key == u'benchmark_runs':
             benchmark.benchmark_runs = int(value)
+        elif key == u'repeat' or key == u'repeat_runs':
+            # alias for benchmark_runs
+            benchmark.benchmark_runs = int(value)
+        elif key == u'workers':
+            benchmark.workers = int(value)
+        elif key == u'concurrency' or key == u'max_concurrency':
+            if value is not None:
+                benchmark.concurrency = int(value)
+        elif key == u'timeout':
+            # timeout in seconds for each request
+            if value is not None:
+                benchmark.timeout = float(value)
+        elif key == u'retry':
+            # retry can be a dict with keys: max_retries, backoff_base, backoff_max, retry_statuses
+            if isinstance(value, dict):
+                from .retry import RetryConfig
+                max_retries = int(value.get('max_retries') or 3)
+                backoff_base = float(value.get('backoff_base') or 0.5)
+                backoff_max = float(value.get('backoff_max') or 30.0)
+                retry_statuses = value.get('retry_statuses', None)
+                # ensure list of ints
+                if retry_statuses is not None:
+                    retry_statuses = [int(x) for x in retry_statuses]
+                benchmark.retry_config = RetryConfig(max_retries=max_retries, backoff_base=backoff_base, backoff_max=backoff_max, retry_statuses=retry_statuses)
+            else:
+                raise TypeError('retry must be a mapping of retry settings')
+        elif key == u'rps_mode':
+            # allow configuring how RPS is computed: 'wall' or 'response'
+            benchmark.rps_mode = str(value).lower()
+        elif key == u'mode':
+            mode = value.lower().strip()
+            if mode in ('sync', 'async'):
+                benchmark.mode = mode
+            else:
+                raise ValueError('Invalid benchmark mode: ' + mode + '. Must be "sync" or "async".')
         elif key == u'output_format':
             format = value.lower()
             if format in OUTPUT_FORMATS:
@@ -242,9 +312,25 @@ def parse_benchmark(base_url, node):
                 for metric in value:
                     if isinstance(metric, dict):
                         for metricname, aggregate in metric.items():
+                            # Backwards-compat: support {'percentiles':[50,95]} or {'p50':'p50'} style
                             if not isinstance(metricname, basestring):
                                 raise TypeError(
                                     "Invalid metric input: non-string metric name")
+                            # percentiles list
+                            if metricname.lower() in (u'percentiles', u'percentile') and isinstance(aggregate, (list, tuple)):
+                                for p in aggregate:
+                                    try:
+                                        pn = int(p)
+                                    except Exception:
+                                        raise TypeError("Invalid percentile value: %r" % (p,))
+                                    benchmark.add_metric(tests.coerce_to_string('total_time'), tests.coerce_to_string('p%d' % pn))
+                                continue
+                            # p50 / p95 style where metricname indicates percentile
+                            import re
+                            if re.match(r'^p\d+$', metricname, flags=re.IGNORECASE):
+                                # use total_time as the metric and metricname as aggregate
+                                benchmark.add_metric(tests.coerce_to_string('total_time'), tests.coerce_to_string(metricname))
+                                continue
                             if not isinstance(aggregate, basestring):
                                 raise TypeError(
                                     "Invalid aggregate input: non-string aggregate name")
@@ -260,6 +346,20 @@ def parse_benchmark(base_url, node):
                     if not isinstance(metricname, basestring):
                         raise TypeError(
                             "Invalid metric input: non-string metric name")
+                    # percentiles list
+                    if metricname.lower() in (u'percentiles', u'percentile') and isinstance(aggregate, (list, tuple)):
+                        for p in aggregate:
+                            try:
+                                pn = int(p)
+                            except Exception:
+                                raise TypeError("Invalid percentile value: %r" % (p,))
+                            benchmark.add_metric(tests.coerce_to_string('total_time'), tests.coerce_to_string('p%d' % pn))
+                        continue
+                    # p50 / p95 style where metricname indicates percentile
+                    import re
+                    if re.match(r'^p\d+$', metricname, flags=re.IGNORECASE):
+                        benchmark.add_metric(tests.coerce_to_string('total_time'), tests.coerce_to_string(metricname))
+                        continue
                     if not isinstance(aggregate, basestring):
                         raise TypeError(
                             "Invalid aggregate input: non-string aggregate name")

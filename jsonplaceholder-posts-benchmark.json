@@ -1,0 +1,1 @@
+{"aggregates": [["total_time", "mean", 0.37372551000000004], ["total_time", "p50", 0.247087], ["total_time", "p95", 0.63685445], ["total_time", "p99", 1.7303508499999658]], "results": {}, "name": "Benchmark POST /posts", "group": "Default", "failures": 0}

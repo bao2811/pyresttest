@@ -1,0 +1,86 @@
+---
+- config:
+    - testset: "SYNC vs ASYNC Performance Comparison"
+    - timeout: 30
+
+# ========== SYNC MODE TESTS (50 requests each) ==========
+
+# GET /posts - SYNC
+- benchmark:
+    name: "GET /posts - SYNC"
+    url: /posts
+    method: GET
+    mode: sync
+    metrics:
+      - total_time: mean
+      - percentiles: [50, 95, 99]
+    warmup_runs: 2
+    benchmark_runs: 50
+    output_format: json
+    output_file: examples/benchmarks/sync_get_posts.json
+
+# POST /posts - SYNC
+- benchmark:
+    name: "POST /posts - SYNC"
+    url: /posts
+    method: POST
+    mode: sync
+    headers: { Content-Type: "application/json; charset=UTF-8" }
+    body: '{"title":"foo","body":"bar","userId":1}'
+    expected_status: [201]
+    metrics:
+      - total_time: mean
+      - percentiles: [50, 95, 99]
+    warmup_runs: 2
+    benchmark_runs: 50
+    output_format: json
+    output_file: examples/benchmarks/sync_post_posts.json
+
+# ========== ASYNC MODE TESTS (50 requests each - same load) ==========
+
+# GET /posts - ASYNC
+- benchmark:
+    name: "GET /posts - ASYNC"
+    url: /posts
+    method: GET
+    mode: async
+    metrics:
+      - total_time: mean
+      - percentiles: [50, 95, 99]
+    warmup_runs: 2
+    benchmark_runs: 50
+    output_format: json
+    output_file: examples/benchmarks/async_get_posts.json
+
+# POST /posts - ASYNC
+- benchmark:
+    name: "POST /posts - ASYNC"
+    url: /posts
+    method: POST
+    mode: async
+    headers: { Content-Type: "application/json; charset=UTF-8" }
+    body: '{"title":"foo","body":"bar","userId":1}'
+    expected_status: [201]
+    metrics:
+      - total_time: mean
+      - percentiles: [50, 95, 99]
+    warmup_runs: 2
+    benchmark_runs: 50
+    output_format: json
+    output_file: examples/benchmarks/async_post_posts.json
+
+# ========== ASYNC HIGH LOAD TEST (200 requests) ==========
+
+# GET /posts - ASYNC 200 requests (stress test)
+- benchmark:
+    name: "GET /posts - ASYNC STRESS (200 req)"
+    url: /posts
+    method: GET
+    mode: async
+    metrics:
+      - total_time: mean
+      - percentiles: [50, 95, 99]
+    warmup_runs: 3
+    benchmark_runs: 200
+    output_format: json
+    output_file: examples/benchmarks/async_stress_200.json

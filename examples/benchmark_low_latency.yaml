@@ -1,0 +1,43 @@
+---
+# Benchmark with local/low-latency API to see async shine
+# ASYNC typically wins when:
+# - Low latency API (< 50ms)
+# - High concurrency (50-200+)
+# - Many small requests
+
+- config:
+    - testset: "Low Latency Comparison (if you have local server)"
+
+# If you have a local server at http://localhost:8000
+# SYNC with low concurrency
+- benchmark:
+    - name: "GET local - SYNC (low concurrency)"
+    - url: "/api/fast"
+    - mode: sync
+    - warmup_runs: 2
+    - benchmark_runs: 100
+    - workers: 2
+    - max_concurrency: 5
+    - output_file: "examples/benchmarks/local_sync_low.json"
+
+# ASYNC with high concurrency - should win here
+- benchmark:
+    - name: "GET local - ASYNC (high concurrency)"
+    - url: "/api/fast"
+    - mode: async
+    - warmup_runs: 2
+    - benchmark_runs: 100
+    - workers: 2
+    - max_concurrency: 50
+    - output_file: "examples/benchmarks/local_async_high.json"
+
+# ASYNC with massive load - real strength
+- benchmark:
+    - name: "GET local - ASYNC STRESS (500 req)"
+    - url: "/api/fast"
+    - mode: async
+    - warmup_runs: 2
+    - benchmark_runs: 500
+    - workers: 4
+    - max_concurrency: 100
+    - output_file: "examples/benchmarks/local_async_stress.json"

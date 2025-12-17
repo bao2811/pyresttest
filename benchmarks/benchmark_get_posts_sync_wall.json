@@ -1,0 +1,1 @@
+{"aggregates": [["total_time", "mean", 0.6120030746459961], ["total_time", "min", 0.0], ["total_time", "max", 10.626801252365112]], "results": {}, "name": "POST /posts - total_time", "group": "Default", "failures": 1}

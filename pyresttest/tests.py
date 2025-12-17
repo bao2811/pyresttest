@@ -530,6 +530,10 @@ class Test(object):
                 else:
                     raise TypeError(
                         "Illegal header type: headers must be a dictionary or list of dictionary keys")
+            elif configelement == u'performance':
+                # Performance configuration block (repeat, concurrency, mode, etc.)
+                # Store as-is for the runner to consume
+                mytest.performance = configvalue
             elif configelement == 'variable_binds':
                 mytest.variable_binds = flatten_dictionaries(configvalue)
             elif configelement == 'generator_binds':

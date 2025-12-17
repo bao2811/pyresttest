@@ -1,0 +1,23 @@
+{
+  "name": "sync-sequential",
+  "total_requests": 200,
+  "passed": 197,
+  "failed": 3,
+  "errors": [
+    "('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))",
+    "('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))",
+    "('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))"
+  ],
+  "min_ms": 239.8512363433838,
+  "max_ms": 837.4631404876709,
+  "avg_ms": 410.48112630844116,
+  "p50_ms": 423.60925674438477,
+  "p95_ms": 593.6738371849059,
+  "p99_ms": 741.2259674072257,
+  "total_wall_seconds": 82.09747529029846,
+  "throughput_rps": 2.436128508127633,
+  "status_counts": {
+    "200": 197,
+    "0": 3
+  }
+}

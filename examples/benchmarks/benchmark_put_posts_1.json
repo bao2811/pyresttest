@@ -1,0 +1,10 @@
+{
+  "total": 5,
+  "passed": 5,
+  "failed": 0,
+  "min_ms": 1056.2512874603271,
+  "max_ms": 1058.8634014129639,
+  "avg_ms": 1057.4002742767334,
+  "total_retries": 0,
+  "avg_retries_per_request": 0.0
+}

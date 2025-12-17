@@ -319,30 +319,17 @@ def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None,
              retry_config=None, max_concurrency=None, *args, **kwargs):
     """ Put together test pieces: configure & run actual test, return results 
     
+    This function handles normal test execution (single HTTP request).
+    For benchmarks (multiple runs with metrics), use run_benchmark() instead.
+    
     Args:
         mytest: Test object to execute
         test_config: TestConfig for test execution
         context: Context for variable binding
         curl_handle: Optional reusable curl handle
-        retry_config: Optional RetryConfig for retry behavior
-        max_concurrency: Optional max concurrent requests for performance tests
+        retry_config: Not used in normal tests (reserved for benchmarks)
+        max_concurrency: Not used in normal tests (reserved for benchmarks)
     """
-
-    # if hasattr(mytest, 'performance') and mytest.performance:
-    #     return run_performance_test(mytest, test_config, context)
-    
-    perf = getattr(mytest, "performance", None)
-    if perf:
-        mode = perf.get("mode", "sync")
-        if mode == "async":
-            # Async performance mode
-            print(f"[Async Performance Mode] Test: {mytest.name}")
-            return execute_async_performance(mytest, max_concurrency, retry_config)
-        else:
-            # ThreadPool-based performance
-            print(f"[Sync Performance Mode] Test: {mytest.name}")
-            return run_performance_test(mytest, test_config, context, max_concurrency, retry_config)
-    
     
     # Initialize a context if not supplied
     my_context = context
@@ -391,20 +378,54 @@ def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None,
         time.sleep(mytest.delay)
 
     # Measure response time
-    start_time = time.time()
-    
-    try:
-        curl.perform()  # Run the actual call
-    except Exception as e:
-        # Curl exception occurred (network error), do not pass go, do not
-        # collect $200
-        trace = traceback.format_exc()
-        result.failures.append(Failure(message="Curl Exception: {0}".format(
-            e), details=trace, failure_type=validators.FAILURE_CURL_EXCEPTION))
-        result.passed = False
-        result.response_time = (time.time() - start_time) * 1000  # Convert to milliseconds
-        curl.close()
-        return result
+    start_time = None
+
+    # Support retrying normal tests when a RetryConfig is provided. This mirrors
+    # the behavior used by the performance runners so users can enable retries
+    # via CLI (e.g. --max_retries) for regular tests as well.
+    attempts = 1
+    if retry_config and getattr(retry_config, 'max_retries', 0) > 0:
+        attempts = retry_config.max_retries + 1
+
+    last_exception = None
+    for attempt in range(attempts):
+        start_time = time.time()
+        try:
+            curl.perform()  # Run the actual call
+        except Exception as e:
+            # Curl exception occurred (network error)
+            trace = traceback.format_exc()
+            last_exception = e
+            result.failures.append(Failure(message=f"Curl Exception: {e}", details=trace,
+                                           failure_type=validators.FAILURE_CURL_EXCEPTION))
+            result.passed = False
+            result.response_time = (time.time() - start_time) * 1000  # ms
+            # If more attempts remain, backoff and retry
+            if retry_config and attempt < (retry_config.max_retries):
+                delay = retry_config.get_backoff_delay(attempt)
+                logger.info(f"Retrying test {mytest.name} after exception, attempt {attempt+1}/{attempts} delay={delay}s")
+                time.sleep(delay)
+                continue
+            curl.close()
+            return result
+
+        # If we reach here, curl.perform() succeeded; inspect response code to
+        # determine whether we should retry on retryable HTTP status codes.
+        try:
+            response_code = curl.getinfo(pycurl.RESPONSE_CODE)
+        except Exception:
+            response_code = None
+
+        # If response code indicates a retryable status and more attempts remain,
+        # back off and retry.
+        if retry_config and response_code and hasattr(retry_config, 'retry_statuses') and response_code in retry_config.retry_statuses and attempt < (retry_config.max_retries):
+            delay = retry_config.get_backoff_delay(attempt)
+            logger.info(f"Retrying test {mytest.name} due to status {response_code}, attempt {attempt+1}/{attempts} delay={delay}s")
+            time.sleep(delay)
+            continue
+
+        # Success or non-retryable status — break out of retry loop
+        break
 
     # Calculate response time in milliseconds
     result.response_time = (time.time() - start_time) * 1000
@@ -488,88 +509,135 @@ def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None,
     return result
 
 
-def run_benchmark(benchmark, test_config=TestConfig(), context=None, *args, **kwargs):
-    """ Perform a benchmark, (re)using a given, configured CURL call to do so
-        The actual analysis of metrics is performed separately, to allow for testing
+def run_benchmark(benchmark, test_config=TestConfig(), context=None, retry_config=None, max_concurrency=None, *args, **kwargs):
+    """ Perform a benchmark using upgraded performance runners (sync/async with retry/concurrency)
+    
+    This replaces the old pycurl loop with modern performance.py / performance_async.py runners.
+    
+    Args:
+        benchmark: Benchmark object (extends Test with warmup_runs, benchmark_runs, metrics)
+        test_config: TestConfig for execution
+        context: Context for variable binding
+        retry_config: Optional RetryConfig for retry behavior
+        max_concurrency: Optional max concurrent requests
+    
+    Returns:
+        BenchmarkResult with aggregated metrics
     """
-
+    
     # Context handling
     my_context = context
     if my_context is None:
         my_context = Context()
 
+    # Convert benchmark config to performance-compatible format
+    # Map benchmark fields to performance config
+    perf_config = {
+        'repeat': benchmark.benchmark_runs,
+        # Allow benchmark to specify concurrency; otherwise prefer max_concurrency from CLI, fallback to benchmark_runs
+        'concurrency': getattr(benchmark, 'concurrency', None) or max_concurrency or benchmark.benchmark_runs,
+        'mode': 'sync',  # Default to sync; can be overridden by checking benchmark attributes
+        # Allow per-benchmark timeout override
+        'timeout': getattr(benchmark, 'timeout', None) or test_config.timeout,
+        'metrics': [],
+        'rps_mode': getattr(benchmark, 'rps_mode', 'wall')
+    }
+    
+    # Check if benchmark wants async mode (if attribute exists)
+    if hasattr(benchmark, 'mode') and benchmark.mode == 'async':
+        perf_config['mode'] = 'async'
+    
+    # Map metrics to performance format
+    # Legacy benchmark metrics (total_time, connect_time, etc.) map to total_time with aggregates
+    for metric_name in benchmark.metrics:
+        if metric_name in benchmark.aggregated_metrics:
+            aggregates = benchmark.aggregated_metrics[metric_name]
+            perf_config['metrics'].append({metric_name: aggregates})
+        else:
+            # Raw metric (no aggregate)
+            perf_config['metrics'].append({metric_name: ['mean']})
+    
+    # Attach performance config to benchmark (temporary)
+    benchmark.performance = perf_config
+    
+    # Warmup runs if configured
     warmup_runs = benchmark.warmup_runs
-    benchmark_runs = benchmark.benchmark_runs
-    message = ''  # Message is name of benchmark... print it?
-
-    if (benchmark_runs <= 0):
-        raise Exception(
-            "Invalid number of benchmark runs, must be > 0 :" + benchmark_runs)
-
-    result = TestResponse()
-
-    # TODO create and use a curl-returning configuration function
-    # TODO create and use a post-benchmark cleanup function
-    # They should use is_dynamic/is_context_modifier to determine if they need to
-    #  worry about context and re-reading/retemplating and only do it if needed
-    #    - Also, they will need to be smart enough to handle extraction functions
-    #  For performance reasons, we don't want to re-run templating/extraction if
-    #   we do not need to, and do not want to save request bodies.
-
-    # Initialize variables to store output
+    if warmup_runs > 0:
+        logger.info(f'Warmup: {benchmark.name} started ({warmup_runs} runs)')
+        warmup_perf = perf_config.copy()
+        warmup_perf['repeat'] = warmup_runs
+        warmup_perf['output_format'] = None  # Don't write warmup results
+        benchmark.performance = warmup_perf
+        
+        # Prefer benchmark-level retry config if provided
+        local_retry = getattr(benchmark, 'retry_config', None) or retry_config
+        # Use benchmark-level concurrency if provided when executing warmup
+        warmup_concurrency = getattr(benchmark, 'concurrency', None) or max_concurrency
+        if warmup_perf['mode'] == 'async':
+            execute_async_performance(benchmark, warmup_concurrency, local_retry, verbose=False)
+        else:
+            run_performance_test(benchmark, test_config, my_context, warmup_concurrency, local_retry, verbose=False)
+        
+        logger.info(f'Warmup: {benchmark.name} finished')
+        
+        # Restore main performance config
+        benchmark.performance = perf_config
+    
+    # Run actual benchmark
+    logger.info(f'Benchmark: {benchmark.name} starting')
+    
+    # Prefer benchmark-level retry config if provided
+    local_retry = getattr(benchmark, 'retry_config', None) or retry_config
+    # Use benchmark-level concurrency if provided, otherwise pass max_concurrency
+    run_concurrency = getattr(benchmark, 'concurrency', None) or max_concurrency
+    if perf_config['mode'] == 'async':
+        perf_results = execute_async_performance(benchmark, run_concurrency, local_retry)
+    else:
+        perf_results = run_performance_test(benchmark, test_config, my_context, run_concurrency, local_retry)
+    
+    logger.info(f'Benchmark: {benchmark.name} ending')
+    
+    # Convert performance results to BenchmarkResult format for compatibility
     output = BenchmarkResult()
     output.name = benchmark.name
     output.group = benchmark.group
-    metricnames = list(benchmark.metrics)
-    # Metric variable for curl, to avoid hash lookup for every metric name
-    metricvalues = [METRICS[name] for name in metricnames]
-    # Initialize arrays to store results for each metric
-    results = [list() for x in xrange(0, len(metricnames))]
-    curl = pycurl.Curl()
+    
+    if isinstance(perf_results, dict):
+        # Summary dict from sync runner
+        output.failures = perf_results.get('failed', 0)
+        # Map performance summary to benchmark results
+        # Store raw times if available (for legacy compatibility)
+        output.results = {}
+        
+        # Add aggregates based on summary
+        output.aggregates = []
+        for metric in benchmark.metrics:
+            if metric == 'total_time' or metric not in METRICS:
+                # Use avg_ms as the primary metric
+                if 'avg_ms' in perf_results:
+                    output.aggregates.append((metric, 'mean', perf_results['avg_ms'] / 1000.0))
+                if 'min_ms' in perf_results:
+                    output.aggregates.append((metric, 'min', perf_results['min_ms'] / 1000.0))
+                if 'max_ms' in perf_results:
+                    output.aggregates.append((metric, 'max', perf_results['max_ms'] / 1000.0))
+                # Add percentiles if present
+                for key in perf_results:
+                    if key.startswith('p') and key[1:].isdigit():
+                        output.aggregates.append((metric, key, perf_results[key] / 1000.0))
+    else:
+        # List of AsyncPerformanceResult objects
+        times = [r.elapsed_ms for r in perf_results]
+        output.failures = len([r for r in perf_results if not r.passed])
+        output.results = {}
+        output.aggregates = []
+        
+        if times:
+            avg_time = sum(times) / len(times) / 1000.0  # Convert to seconds
+            for metric in benchmark.metrics:
+                output.aggregates.append((metric, 'mean', avg_time))
+    
+    return output
 
-    # Benchmark warm-up to allow for caching, JIT compiling, on client
-    logger.info('Warmup: ' + message + ' started')
-    for x in xrange(0, warmup_runs):
-        benchmark.update_context_before(my_context)
-        templated = benchmark.realize(my_context)
-        curl = templated.configure_curl(
-            timeout=test_config.timeout, context=my_context, curl_handle=curl)
-        # Do not store actual response body at all.
-        curl.setopt(pycurl.WRITEFUNCTION, lambda x: None)
-        curl.perform()
-
-    logger.info('Warmup: ' + message + ' finished')
-
-    logger.info('Benchmark: ' + message + ' starting')
-
-    for x in xrange(0, benchmark_runs):  # Run the actual benchmarks
-        # Setup benchmark
-        benchmark.update_context_before(my_context)
-        templated = benchmark.realize(my_context)
-        curl = templated.configure_curl(
-            timeout=test_config.timeout, context=my_context, curl_handle=curl)
-        # Do not store actual response body at all.
-        curl.setopt(pycurl.WRITEFUNCTION, lambda x: None)
-
-        try:  # Run the curl call, if it errors, then add to failure counts for benchmark
-            curl.perform()
-        except Exception:
-            output.failures = output.failures + 1
-            curl.close()
-            curl = pycurl.Curl()
-            continue  # Skip metrics collection
-
-        # Get all metrics values for this run, and store to metric lists
-        for i in xrange(0, len(metricnames)):
-            results[i].append(curl.getinfo(metricvalues[i]))
-
-    logger.info('Benchmark: ' + message + ' ending')
-
-    temp_results = dict()
-    for i in xrange(0, len(metricnames)):
-        temp_results[metricnames[i]] = results[i]
-    output.results = temp_results
-    return analyze_benchmark_results(output, benchmark)
 
 
 def analyze_benchmark_results(benchmark_result, benchmark):
@@ -755,7 +823,8 @@ def run_testsets(testsets, retry_config=None, max_concurrency=None):
             logger.info("Benchmark Starting: " + benchmark.name +
                         " Group: " + benchmark.group)
             benchmark_result = run_benchmark(
-                benchmark, myconfig, context=context)
+                benchmark, myconfig, context=context, 
+                retry_config=retry_config, max_concurrency=max_concurrency)
             print(benchmark_result)
             logger.info("Benchmark Done: " + benchmark.name +
                         " Group: " + benchmark.group)

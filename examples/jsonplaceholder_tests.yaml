@@ -99,7 +99,7 @@
     - name: "Benchmark GET /posts"
     - url: "/posts"
     - warmup_runs: 5
-    - benchmark_runs: 50
+    - benchmark_runs: 200
     - concurrency: 10
     - metrics:
         - total_time: mean
@@ -107,3 +107,19 @@
         - speed_download: median
     - output_format: json
     - output_file: "jsonplaceholder-get-posts-benchmark.json"
+
+# 10) Performance benchmark (POST /posts)
+- benchmark:
+    - name: "Benchmark POST /posts"
+    - url: "/posts"
+    - method: "POST"
+    - headers: { Content-Type: "application/json; charset=UTF-8" }
+    - body: '{"title":"perf","body":"load test","userId":1}'
+    - warmup_runs: 3
+    - benchmark_runs: 200
+    - concurrency: 5
+    - metrics:
+        - total_time: mean
+        - percentiles: [50, 95, 99]
+    - output_format: json
+    - output_file: "jsonplaceholder-posts-benchmark.json"

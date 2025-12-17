@@ -1,0 +1,23 @@
+---
+# Example: simple test file demonstrating retry behavior for a normal test
+# Note: run with CLI flags to enable retry, for example:
+# .venv/bin/pyresttest --url https://httpbin.org --test examples/test_retry.yaml --max_retries 2 --retry_backoff_base 0.5 --retry_backoff_max 2
+
+- config:
+    - testset: "Retry demo"
+    - timeout: 5
+
+# This test hits an endpoint that returns 500; with retries enabled the runner
+# will attempt the request up to max_retries times before failing.
+- test:
+    - name: "GET /status/500 should trigger retries"
+    - url: "/status/500"
+    - method: "GET"
+    - expected_status: [200]
+
+# A control test that should succeed (no retries needed)
+- test:
+    - name: "GET /get should succeed"
+    - url: "/get"
+    - method: "GET"
+    - expected_status: [200]

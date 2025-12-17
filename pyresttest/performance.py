@@ -1,4 +1,6 @@
 import time
+import json
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import logging
@@ -70,7 +72,7 @@ def run_single_http_test(test, context, retry_config=None):
     
     # Run validators
     passed = True
-    for validator in test.validators:
+    for validator in (test.validators or []):
         if not validator.validate(response, context):
             passed = False
             break
@@ -83,7 +85,7 @@ def run_single_http_test(test, context, retry_config=None):
     }
 
 
-def run_performance_test(test, test_config, context, max_concurrency=None, retry_config=None):
+def run_performance_test(test, test_config, context, max_concurrency=None, retry_config=None, verbose=True):
     """
     Run performance test with configurable concurrency and retry
     
@@ -93,6 +95,7 @@ def run_performance_test(test, test_config, context, max_concurrency=None, retry
         context: Test context
         max_concurrency: Optional override for max concurrent requests
         retry_config: Optional RetryConfig for retry behavior
+        verbose: Whether to print results to console (default True, False for warmup)
     
     Returns:
         Summary dict with performance statistics
@@ -108,6 +111,9 @@ def run_performance_test(test, test_config, context, max_concurrency=None, retry
         return execute_async_performance(test, max_concurrency, retry_config)
 
     results = []
+    
+    # Track wall clock time
+    wall_start = time.time()
 
     def worker(_):
         try:
@@ -125,10 +131,25 @@ def run_performance_test(test, test_config, context, max_concurrency=None, retry
         futures = [exec.submit(worker, i) for i in range(repeat)]
         for f in as_completed(futures):
             results.append(f.result())
+    
+    # Calculate wall clock time
+    wall_elapsed_sec = time.time() - wall_start
 
     # Calculate statistics
     times = [r['elapsed_ms'] for r in results]
     total_retries = sum(r.get('retries', 0) for r in results)
+    
+    # Compute RPS. Default mode is 'wall' (requests / wall clock time).
+    # If performance.rps_mode == 'response' then compute RPS as reciprocal of
+    # average response time (1 / avg_response_time_seconds) which is equivalent
+    # to total_requests / sum(response_times_seconds).
+    rps_mode = perf.get('rps_mode', 'wall') if isinstance(perf, dict) else 'wall'
+    if rps_mode == 'response':
+        avg_ms = sum(times) / len(times) if times else 0
+        rps = (1000.0 / avg_ms) if avg_ms > 0 else 0
+    else:
+        # RPS = total requests / wall clock time
+        rps = repeat / wall_elapsed_sec if wall_elapsed_sec > 0 else 0
 
     summary = {
         "total": repeat,
@@ -137,6 +158,8 @@ def run_performance_test(test, test_config, context, max_concurrency=None, retry
         "min_ms": min(times) if times else 0,
         "max_ms": max(times) if times else 0,
         "avg_ms": sum(times) / len(times) if times else 0,
+        "wall_time_sec": wall_elapsed_sec,
+        "rps": rps,
         "total_retries": total_retries,
         "avg_retries_per_request": total_retries / repeat if repeat > 0 else 0
     }
@@ -144,13 +167,61 @@ def run_performance_test(test, test_config, context, max_concurrency=None, retry
     if threshold:
         summary["threshold_exceeded"] = len([t for t in times if t > threshold])
 
-    print("=== PERFORMANCE SUMMARY ===")
-    for key, value in summary.items():
-        if isinstance(value, float):
-            print(f"{key}: {value:.2f}")
-        else:
-            print(f"{key}: {value}")
-    print("===========================")
+    # Only print if verbose=True (skip for warmup runs)
+    if verbose:
+        test_name = getattr(test, 'name', 'Unnamed')
+        print(f"\n{'='*60}")
+        print(f"[SYNC MODE] Performance Test: {test_name}")
+        print(f"{'='*60}")
+        print(f"Total Requests    : {summary['total']}")
+        print(f"Passed            : {summary['passed']}")
+        print(f"Failed            : {summary['failed']}")
+        print(f"Min Response Time : {summary['min_ms']:.2f} ms")
+        print(f"Avg Response Time : {summary['avg_ms']:.2f} ms")
+        print(f"Max Response Time : {summary['max_ms']:.2f} ms")
+        print(f"Wall Clock Time   : {summary['wall_time_sec']:.2f} sec")
+        print(f"Throughput (RPS)  : {summary['rps']:.2f} req/sec")
+        if total_retries > 0:
+            print(f"Total Retries     : {summary['total_retries']}")
+            print(f"Avg Retries/Req   : {summary['avg_retries_per_request']:.2f}")
+        print(f"{'='*60}\n")
+    
+    # Optional: add percentiles if requested
+    metrics = perf.get('metrics', []) if isinstance(perf, dict) else []
+    # metrics may be list of mappings, look for percentiles key
+    percentiles = None
+    for m in metrics:
+        if isinstance(m, dict) and 'percentiles' in m:
+            percentiles = m.get('percentiles')
+            break
+    if percentiles and times:
+        def _percentile(sorted_times, p):
+            k = (len(sorted_times)-1) * (p/100.0)
+            f = int(k)
+            c = min(f+1, len(sorted_times)-1)
+            if f == c:
+                return sorted_times[int(k)]
+            d0 = sorted_times[f] * (c - k)
+            d1 = sorted_times[c] * (k - f)
+            return d0 + d1
+
+        st = sorted(times)
+        pct_vals = {f"p{int(p)}": _percentile(st, p) for p in percentiles}
+        summary.update(pct_vals)
+
+    # Write JSON output if requested
+    out_file = perf.get('output_file') if isinstance(perf, dict) else None
+    out_format = perf.get('output_format') if isinstance(perf, dict) else None
+    if out_file and out_format and out_format.lower() == 'json':
+        try:
+            odir = os.path.dirname(out_file)
+            if odir and not os.path.exists(odir):
+                os.makedirs(odir)
+            with open(out_file, 'w') as fh:
+                json.dump(summary, fh, indent=2)
+            logger.info(f"Wrote performance summary JSON to {out_file}")
+        except Exception as e:
+            logger.error(f"Failed to write performance output file {out_file}: {e}")
 
     return summary
 

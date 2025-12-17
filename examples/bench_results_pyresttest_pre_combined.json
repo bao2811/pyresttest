@@ -1,0 +1,63 @@
+{
+  "runs": [
+    {
+      "sync": {
+        "name": "sync-sequential",
+        "total_requests": 200,
+        "passed": 200,
+        "failed": 0,
+        "errors": [],
+        "min_ms": 202.0423412322998,
+        "max_ms": 458.1122398376465,
+        "avg_ms": 281.11688017845154,
+        "p50_ms": 262.5623941421509,
+        "p95_ms": 389.0775442123413,
+        "p99_ms": 446.4287018775939,
+        "total_wall_seconds": 56.224390268325806,
+        "throughput_rps": 3.557175080877145,
+        "status_counts": {
+          "200": 200
+        }
+      },
+      "sync_concurrent": {
+        "name": "sync-concurrent-50",
+        "total_requests": 200,
+        "passed": 200,
+        "failed": 0,
+        "errors": [],
+        "min_ms": 172.52039909362793,
+        "max_ms": 5390.355825424194,
+        "avg_ms": 1101.1678862571716,
+        "p50_ms": 411.57078742980957,
+        "p95_ms": 5192.990195751189,
+        "p99_ms": 5301.239809989929,
+        "total_wall_seconds": 8.12787938117981,
+        "throughput_rps": 24.606664373379125,
+        "status_counts": {
+          "200": 200
+        }
+      },
+      "async": {
+        "name": "async-concurrent-50",
+        "total_requests": 200,
+        "passed": 200,
+        "failed": 0,
+        "errors": [],
+        "min_ms": 32.15312957763672,
+        "max_ms": 1255.011796951294,
+        "avg_ms": 284.9395954608917,
+        "p50_ms": 214.16163444519043,
+        "p95_ms": 1008.0280780792199,
+        "p99_ms": 1251.595447063446,
+        "total_wall_seconds": 1.4475562572479248,
+        "throughput_rps": 138.16388758543823,
+        "status_counts": {
+          "200": 200
+        }
+      },
+      "sync_path": "examples/bench_results_pre/pre_sync_run1.json",
+      "syncc_path": "examples/bench_results_pre/pre_syncc_c50_run1.json",
+      "async_path": "examples/bench_results_pre/pre_async_c50_run1.json"
+    }
+  ]
+}

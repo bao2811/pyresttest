@@ -1,0 +1,95 @@
+---
+- config:
+    testset: "JSONPlaceholder benchmarks"
+    timeout: 10
+
+# GET /posts
+- benchmark:
+    name: "GET /posts - total_time"
+    url: /posts
+    method: GET
+    metrics: [total_time]
+    warmup_runs: 1
+    benchmark_runs: 5
+    output_format: json
+    output_file: ./benchmarks/benchmark_get_posts.json
+
+# GET /posts/1
+- benchmark:
+    name: "GET /posts/1 - total_time"
+    url: /posts/1
+    method: GET
+    metrics: [total_time]
+    warmup_runs: 1
+    benchmark_runs: 5
+    output_format: json
+    output_file: ./benchmarks/benchmark_get_posts_1.json
+
+# GET /posts/1/comments
+- benchmark:
+    name: "GET /posts/1/comments - total_time"
+    url: /posts/1/comments
+    method: GET
+    metrics: [total_time]
+    warmup_runs: 1
+    benchmark_runs: 5
+    output_format: json
+    output_file: ./benchmarks/benchmark_get_posts_1_comments.json
+
+# GET /comments?postId=1
+- benchmark:
+    name: "GET /comments?postId=1 - total_time"
+    url: /comments?postId=1
+    method: GET
+    metrics: [total_time]
+    warmup_runs: 1
+    benchmark_runs: 5
+    output_format: json
+    output_file: ./benchmarks/benchmark_get_comments_postid1.json
+
+# POST /posts
+- benchmark:
+    name: "POST /posts - total_time"
+    url: /posts
+    method: POST
+    body: '{"title":"foo","body":"bar","userId":1}'
+    metrics: [total_time]
+    warmup_runs: 1
+    benchmark_runs: 5
+    output_format: json
+    output_file: ./benchmarks/benchmark_post_posts.json
+
+# PUT /posts/1
+- benchmark:
+    name: "PUT /posts/1 - total_time"
+    url: /posts/1
+    method: PUT
+    body: '{"id":1,"title":"foo","body":"bar","userId":1}'
+    metrics: [total_time]
+    warmup_runs: 1
+    benchmark_runs: 5
+    output_format: json
+    output_file: ./benchmarks/benchmark_put_posts_1.json
+
+# PATCH /posts/1
+- benchmark:
+    name: "PATCH /posts/1 - total_time"
+    url: /posts/1
+    method: PATCH
+    body: '{"title":"patched title"}'
+    metrics: [total_time]
+    warmup_runs: 1
+    benchmark_runs: 5
+    output_format: json
+    output_file: ./benchmarks/benchmark_patch_posts_1.json
+
+# DELETE /posts/1
+- benchmark:
+    name: "DELETE /posts/1 - total_time"
+    url: /posts/1
+    method: DELETE
+    metrics: [total_time]
+    warmup_runs: 1
+    benchmark_runs: 5
+    output_format: json
+    output_file: ./benchmarks/benchmark_delete_posts_1.json

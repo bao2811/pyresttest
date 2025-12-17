@@ -1,0 +1,1 @@
+{"aggregates": [["total_time", "mean", 0.3866116046905518], ["total_time", "min", 0.3841111660003662], ["total_time", "max", 0.39087629318237305]], "results": {}, "name": "PATCH /posts/1 - total_time", "group": "Default", "failures": 0}

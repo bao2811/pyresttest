@@ -1,0 +1,43 @@
+- config:
+    testset: "JSONPlaceholder sync vs async comparison"
+    timeout: 10
+
+- benchmark:
+    name: "POST /posts - total_time"
+    url: /posts
+    method: POST
+    body: '{"title":"foo","body":"bar","userId":1}'
+    mode: sync
+    concurrency: 100
+    benchmark_runs: 1000
+    warmup_runs: 20
+    timeout: 10
+    retry:
+      max_retries: 1
+      backoff_base: 0.5
+      backoff_max: 2
+      retry_statuses: [500, 502, 503, 504]
+    rps_mode: wall
+    metrics: [total_time]
+    output_format: json
+    output_file: ./benchmarks/benchmark_get_posts_sync_wall.json
+
+- benchmark:
+    name: "POST /posts - total_time"
+    url: /posts
+    method: POST
+    body: '{"title":"foo","body":"bar","userId":1}'
+    mode: async
+    concurrency: 100
+    benchmark_runs: 1000
+    warmup_runs: 20
+    timeout: 10
+    retry:
+      max_retries: 1
+      backoff_base: 0.5
+      backoff_max: 2
+      retry_statuses: [500, 502, 503, 504]
+    rps_mode: wall
+    metrics: [total_time]
+    output_format: json
+    output_file: ./benchmarks/benchmark_get_posts_async_wall.json

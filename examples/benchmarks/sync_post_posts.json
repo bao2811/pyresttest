@@ -1,0 +1,1 @@
+{"aggregates": [["total_time", "mean", 0.4981516647338867], ["total_time", "min", 0.3228471279144287], ["total_time", "max", 1.0383358001708984]], "results": {}, "name": "POST /posts - SYNC", "group": "Default", "failures": 0}
