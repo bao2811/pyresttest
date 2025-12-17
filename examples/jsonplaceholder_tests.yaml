@@ -1,0 +1,109 @@
+---
+- config:
+    - testset: "JSONPlaceholder - Basic CRUD and Queries"
+    - max_retries: 2
+    - retry_backoff_base: 0.5
+    - retry_backoff_max: 10.0
+    - max_concurrency: 10
+
+# 1) GET /posts
+- test:
+    - name: "GET /posts - list posts"
+    - url: "/posts"
+    - method: "GET"
+    - expected_status: [200]
+    - validators:
+        - compare: { jsonpath_mini: "0.id", comparator: "gt", expected: 0 }
+
+# 2) GET /posts/1
+- test:
+    - name: "GET /posts/1 - single post"
+    - url: "/posts/1"
+    - method: "GET"
+    - expected_status: [200]
+    - validators:
+        - compare: { jsonpath_mini: "id", comparator: "eq", expected: 1 }
+        - compare: { jsonpath_mini: "userId", comparator: "gt", expected: 0 }
+
+# 3) GET /posts/1/comments
+- test:
+    - name: "GET /posts/1/comments - comments for post 1"
+    - url: "/posts/1/comments"
+    - method: "GET"
+    - expected_status: [200]
+    - validators:
+        - compare: { jsonpath_mini: "0.postId", comparator: "eq", expected: 1 }
+
+# 4) GET /comments?postId=1
+- test:
+    - name: "GET /comments?postId=1 - query comments"
+    - url: "/comments?postId=1"
+    - method: "GET"
+    - expected_status: [200]
+    - validators:
+        - compare: { jsonpath_mini: "0.postId", comparator: "eq", expected: 1 }
+
+# 5) POST /posts
+- test:
+    - name: "POST /posts - create post"
+    - url: "/posts"
+    - method: "POST"
+    - headers: { Content-Type: "application/json; charset=UTF-8" }
+    - body: '{"title": "foo", "body": "bar", "userId": 1}'
+    - expected_status: [201]
+    - validators:
+        - compare: { jsonpath_mini: "title", comparator: "eq", expected: "foo" }
+        - compare: { jsonpath_mini: "id", comparator: "gt", expected: 100 }
+
+# 6) PUT /posts/1
+- test:
+    - name: "PUT /posts/1 - replace post"
+    - url: "/posts/1"
+    - method: "PUT"
+    - headers: { Content-Type: "application/json; charset=UTF-8" }
+    - body: '{"id":1, "title": "updated", "body": "updated body", "userId": 1}'
+    - expected_status: [200]
+    - validators:
+        - compare: { jsonpath_mini: "id", comparator: "eq", expected: 1 }
+        - compare:
+            { jsonpath_mini: "title", comparator: "eq", expected: "updated" }
+
+# 7) PATCH /posts/1
+- test:
+    - name: "PATCH /posts/1 - patch post"
+    - url: "/posts/1"
+    - method: "PATCH"
+    - headers: { Content-Type: "application/json; charset=UTF-8" }
+    - body: '{"title": "patched title"}'
+    - expected_status: [200]
+    - validators:
+        - compare: { jsonpath_mini: "id", comparator: "eq", expected: 1 }
+        - compare:
+            {
+              jsonpath_mini: "title",
+              comparator: "eq",
+              expected: "patched title",
+            }
+
+# 8) DELETE /posts/1
+- test:
+    - name: "DELETE /posts/1 - delete post"
+    - url: "/posts/1"
+    - method: "DELETE"
+    - expected_status: [200]
+    - validators:
+        - compare: { raw_body: "", comparator: "regex", expected: ".*" }
+
+# 9) Performance benchmark (GET /posts)
+- benchmark:
+    - name: "Benchmark GET /posts"
+    - url: "/posts"
+    - warmup_runs: 5
+    - benchmark_runs: 50
+    - concurrency: 10
+    - metrics:
+        - total_time: mean
+        - total_time: median
+        - speed_download: median
+    - output_format: json
+    - output_file: "jsonplaceholder-get-posts-benchmark.json"

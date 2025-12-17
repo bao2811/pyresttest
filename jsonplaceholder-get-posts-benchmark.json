@@ -1,0 +1,1 @@
+{"aggregates": [["total_time", "mean", 0.12305137999999999], ["total_time", "median", 0.1465395], ["speed_download", "median", 187799.5]], "results": {}, "name": "Benchmark GET /posts", "group": "Default", "failures": 0}
