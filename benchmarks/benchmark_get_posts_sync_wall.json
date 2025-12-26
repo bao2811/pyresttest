@@ -1,1 +1,1 @@
-{"aggregates": [["total_time", "mean", 0.6120030746459961], ["total_time", "min", 0.0], ["total_time", "max", 10.626801252365112]], "results": {}, "name": "POST /posts - total_time", "group": "Default", "failures": 1}
+{"aggregates": [["total_time", "mean", 0.19969721531867982], ["total_time", "min", 0.028247356414794922], ["total_time", "max", 2.5999274253845215]], "results": {}, "name": "GET /posts - SYNC (wall-clock RPS)", "group": "Default", "failures": 0}

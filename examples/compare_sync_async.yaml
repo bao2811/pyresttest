@@ -8,7 +8,7 @@
     method: GET
     mode: sync
     concurrency: 30
-    benchmark_runs: 200
+    benchmark_runs: 1000
     warmup_runs: 20
     timeout: 10
     retry:
@@ -27,7 +27,7 @@
     method: GET
     mode: async
     concurrency: 30
-    benchmark_runs: 200
+    benchmark_runs: 1000
     warmup_runs: 20
     timeout: 10
     retry:

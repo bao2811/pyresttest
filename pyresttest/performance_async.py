@@ -210,8 +210,10 @@ async def run_async_performance(test, max_concurrency=None, retry_config=None, v
     # Only print summary if verbose=True (skip for warmup runs)
     if verbose:
         test_name = getattr(test, 'name', 'Unnamed')
+        method = getattr(test, 'method', 'GET')
+        url = getattr(test, 'url', '')
         print(f"\n{'='*60}")
-        print(f"[ASYNC MODE] Performance Test: {test_name}")
+        print(f"[ASYNC MODE] Performance Test: {test_name}  --  {method} {url}")
         print(f"{'='*60}")
         print(f"Total Requests    : {summary['total']}")
         print(f"Passed            : {summary['passed']}")

@@ -1,1 +1,1 @@
-{"aggregates": [["total_time", "mean", 0.5553196210861207]], "results": {}, "name": "POST /posts - total_time", "group": "Default", "failures": 0}
+{"aggregates": [["total_time", "mean", 0.16517921662330629]], "results": {}, "name": "GET /posts - ASYNC (wall-clock RPS)", "group": "Default", "failures": 0}

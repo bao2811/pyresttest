@@ -17,10 +17,10 @@
       backoff_base: 0.5
       backoff_max: 2
       retry_statuses: [500, 502, 503, 504]
-    rps_mode: wall
+    rps_mode: response
     metrics: [total_time]
     output_format: json
-    output_file: ./benchmarks/benchmark_get_posts_sync_wall.json
+    output_file: ./benchmarks/benchmark_get_posts_sync_response.json
 
 - benchmark:
     name: "POST /posts - total_time"
@@ -37,7 +37,8 @@
       backoff_base: 0.5
       backoff_max: 2
       retry_statuses: [500, 502, 503, 504]
-    rps_mode: wall
+    rps_mode: response
     metrics: [total_time]
     output_format: json
-    output_file: ./benchmarks/benchmark_get_posts_async_wall.json
+    output_file: ./benchmarks/benchmark_get_posts_async_response.json
+# .venv/bin/pyresttest --url https://jsonplaceholder.typicode.com --test examples/test.yaml --log info

@@ -259,33 +259,14 @@ def parse_testsets(base_url, test_structure, test_files=set(), working_directory
                     val = node[key]
                     assert isinstance(val, basestring)
                     mytest.url = base_url + val
-                    # preserve original sequence if present (set by sharder)
-                    if '__seq' in node:
-                        try:
-                            mytest.orig_seq = int(node.get('__seq'))
-                        except Exception:
-                            mytest.orig_seq = None
                     tests_out.append(mytest)
                 elif key == u'test':  # Complex test with additional parameters
                     with cd(working_directory):
                         child = node[key]
                         mytest = Test.parse_test(base_url, child)
-                        # preserve original sequence if present (set by sharder)
-                        if isinstance(child, dict) and '__seq' in child:
-                            try:
-                                mytest.orig_seq = int(child.get('__seq'))
-                            except Exception:
-                                mytest.orig_seq = None
                         tests_out.append(mytest)
                 elif key == u'benchmark':
-                    child = node[key]
-                    benchmark = parse_benchmark(base_url, child)
-                    # preserve original sequence if present (set by sharder)
-                    if isinstance(child, dict) and '__seq' in child:
-                        try:
-                            benchmark.orig_seq = int(child.get('__seq'))
-                        except Exception:
-                            benchmark.orig_seq = None
+                    benchmark = parse_benchmark(base_url, node[key])
                     benchmarks.append(benchmark)
                 elif key == u'config' or key == u'configuration':
                     test_config = parse_configuration(
@@ -401,19 +382,12 @@ def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None,
     # Measure response time
     start_time = None
 
-    # Support retrying normal tests when a RetryConfig is provided. Prefer a
-    # test-specific retry config (set by YAML `retry:` under a `- test:`) and
-    # fall back to the global retry_config (from CLI --max-retries).
-    local_retry = None
-    # templated_test is the realized Test instance (with templates applied)
-    try:
-        local_retry = getattr(templated_test, 'retry_config', None) or retry_config
-    except Exception:
-        local_retry = retry_config
-
+    # Support retrying normal tests when a RetryConfig is provided. This mirrors
+    # the behavior used by the performance runners so users can enable retries
+    # via CLI (e.g. --max_retries) for regular tests as well.
     attempts = 1
-    if local_retry and getattr(local_retry, 'max_retries', 0) > 0:
-        attempts = local_retry.max_retries + 1
+    if retry_config and getattr(retry_config, 'max_retries', 0) > 0:
+        attempts = retry_config.max_retries + 1
 
     last_exception = None
     for attempt in range(attempts):
@@ -429,8 +403,8 @@ def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None,
             result.passed = False
             result.response_time = (time.time() - start_time) * 1000  # ms
             # If more attempts remain, backoff and retry
-            if local_retry and attempt < (local_retry.max_retries):
-                delay = local_retry.get_backoff_delay(attempt)
+            if retry_config and attempt < (retry_config.max_retries):
+                delay = retry_config.get_backoff_delay(attempt)
                 logger.info(f"Retrying test {mytest.name} after exception, attempt {attempt+1}/{attempts} delay={delay}s")
                 time.sleep(delay)
                 continue
@@ -446,8 +420,8 @@ def run_test(mytest, test_config=TestConfig(), context=None, curl_handle=None,
 
         # If response code indicates a retryable status and more attempts remain,
         # back off and retry.
-        if local_retry and response_code and hasattr(local_retry, 'retry_statuses') and response_code in local_retry.retry_statuses and attempt < (local_retry.max_retries):
-            delay = local_retry.get_backoff_delay(attempt)
+        if retry_config and response_code and hasattr(retry_config, 'retry_statuses') and response_code in retry_config.retry_statuses and attempt < (retry_config.max_retries):
+            delay = retry_config.get_backoff_delay(attempt)
             logger.info(f"Retrying test {mytest.name} due to status {response_code}, attempt {attempt+1}/{attempts} delay={delay}s")
             time.sleep(delay)
             continue
@@ -761,7 +735,7 @@ def log_failure(failure, context=None, test_config=TestConfig()):
         logger.error("Validator/Error details:" + str(failure.details))
 
 
-def run_testsets(testsets, retry_config=None, max_concurrency=None, preserve_order=False, shard_result_file=None, source_file=None):
+def run_testsets(testsets, retry_config=None, max_concurrency=None):
     """ Execute a set of tests, using given TestSet list input 
     
     Args:
@@ -777,7 +751,6 @@ def run_testsets(testsets, retry_config=None, max_concurrency=None, preserve_ord
     total_failures = 0
     myinteractive = False
     curl_handle = pycurl.Curl()
-    ordered_summaries_all = [] if preserve_order else None
 
     for testset in testsets:
         mytests = testset.tests
@@ -801,8 +774,6 @@ def run_testsets(testsets, retry_config=None, max_concurrency=None, preserve_ord
         myinteractive = True if myinteractive or myconfig.interactive else False
 
         # Run tests, collecting statistics as needed
-        local_index = 0
-        ordered_summaries = [] if preserve_order else None
         for test in mytests:
             # Initialize the dictionaries to store test fail counts and results
             if test.group not in group_results:
@@ -839,25 +810,7 @@ def run_testsets(testsets, retry_config=None, max_concurrency=None, preserve_ord
 
             # Always print a concise per-test summary to stdout so users can
             # see response times even when logger level hides INFO messages.
-            # Build a concise summary dict for potential ordered output
-            summary = {
-                'name': getattr(test, 'name', None) or (getattr(result, 'test', {}).get('name', None) if isinstance(result.test, dict) else getattr(test, 'name', None)),
-                'url': getattr(result.test, 'url', getattr(test, 'url', None)),
-                'passed': bool(result.passed),
-                'response_time_ms': float(result.response_time or 0),
-                'group': getattr(test, 'group', None),
-                'local_index': local_index,
-                'source_file': source_file
-            }
-
-            # If the Test object carries an original sequence index (from sharding), include it
-            if hasattr(test, 'orig_seq'):
-                summary['orig_seq'] = getattr(test, 'orig_seq')
-
-            if preserve_order:
-                ordered_summaries.append(summary)
-            else:
-                # Immediate printing (existing behavior)
+            if hasattr(result, 'response_time') and result.response_time is not None:
                 try:
                     print(f"TEST RESULT: {test.name} | URL={result.test.url} | Passed={result.passed} | Response Time={result.response_time:.2f} ms")
                 except Exception:
@@ -872,7 +825,6 @@ def run_testsets(testsets, retry_config=None, max_concurrency=None, preserve_ord
                 print(
                     'STOP ON FAILURE! stopping test set execution, continuing with other test sets')
                 break
-            local_index += 1
 
         for benchmark in mybenchmarks:  # Run benchmarks, analyze, write
             if not benchmark.metrics:
@@ -889,12 +841,10 @@ def run_testsets(testsets, retry_config=None, max_concurrency=None, preserve_ord
                     logger.info("Benchmark Starting: " + benchmark.name + " Group: " + benchmark.group)
             except Exception:
                 logger.info("Benchmark Starting: " + benchmark.name + " Group: " + benchmark.group)
-
             benchmark_result = run_benchmark(
-                benchmark, myconfig, context=context,
+                benchmark, myconfig, context=context, 
                 retry_config=retry_config, max_concurrency=max_concurrency)
             print(benchmark_result)
-
             try:
                 if bm_method and bm_url:
                     logger.info(f"Benchmark Done: {benchmark.name} ({bm_method} {bm_url}) Group: {benchmark.group}")
@@ -913,36 +863,6 @@ def run_testsets(testsets, retry_config=None, max_concurrency=None, preserve_ord
                 write_method(my_file, benchmark_result,
                              benchmark, test_config=myconfig)
                 my_file.close()
-
-        # At the end of processing this testset, if we collected ordered summaries,
-        # append them to the global collector for later merging/printing.
-        if preserve_order and ordered_summaries is not None:
-            ordered_summaries_all.extend(ordered_summaries)
-
-    # After iterating testsets, if preserve_order requested and we collected summaries,
-    # either write them to the shard_result_file (child worker case) or print them in-order (single-process case).
-    if preserve_order:
-        collected = locals().get('ordered_summaries', [])
-        if shard_result_file:
-            # Write JSON list to shard_result_file
-            try:
-                odir = os.path.dirname(shard_result_file)
-                if odir and not os.path.exists(odir):
-                    os.makedirs(odir)
-                with open(shard_result_file, 'w') as fh:
-                    json.dump(collected, fh)
-            except Exception as e:
-                logger.error(f"Failed to write shard result file {shard_result_file}: {e}")
-        else:
-            # No shard file -> print in-order by orig_seq/local_index
-            try:
-                # sort by orig_seq if present, else by local_index
-                def _sort_key(x):
-                    return (x.get('orig_seq', None) if x.get('orig_seq', None) is not None else float('inf'), x.get('local_index', 0))
-                for s in sorted(collected, key=_sort_key):
-                    print(f"TEST RESULT: {s.get('name')} | URL={s.get('url')} | Passed={s.get('passed')} | Response Time={s.get('response_time_ms'):.2f} ms")
-            except Exception as e:
-                logger.error(f"Failed to print ordered summaries: {e}")
 
     if myinteractive:
         # a break for when interactive bits are complete, before summary data
@@ -1108,12 +1028,7 @@ def execute_tests_with_args(args):
         logger.info(f"Max concurrency set to: {max_concurrency}")
 
     # Execute all testsets with retry and concurrency configs
-    preserve = args.get('preserve_order', False)
-    shard_file = args.get('shard_result_file', None)
-    source_file = args.get('test', None)
-    failures = run_testsets(tests, retry_config=retry_config, max_concurrency=max_concurrency,
-                            preserve_order=preserve, shard_result_file=shard_file, source_file=source_file)
-    # run_testsets returns integer failures as before
+    failures = run_testsets(tests, retry_config=retry_config, max_concurrency=max_concurrency)
     return failures
 
 
@@ -1150,62 +1065,18 @@ def execute_multiple_files(args_base, test_files, parallel_suites=1):
 
     if parallel_suites and parallel_suites > 1:
         logger.info(f"Executing {len(test_files)} test files in parallel (processes={parallel_suites})")
-        # If preserve_order requested, create a temporary dir to collect per-shard result files
-        preserve = args_base.get('preserve_order', False)
-        temp_result_dir = None
-        if preserve:
-            temp_result_dir = tempfile.mkdtemp(prefix='pyresttest_results_')
-
         with ProcessPoolExecutor(max_workers=parallel_suites) as executor:
-            futures = {}
-            for i, tf in enumerate(test_files):
-                # Create a per-worker args copy so we can attach a shard_result_file path
-                local_args = dict(args_base)
-                local_args['test'] = tf
-                if preserve:
-                    result_path = os.path.join(temp_result_dir, f"result_{i}.json")
-                    local_args['shard_result_file'] = result_path
-                fut = executor.submit(_worker_execute_single_file, local_args, tf)
-                futures[fut] = (tf, local_args.get('shard_result_file', None))
-
+            futures = {executor.submit(_worker_execute_single_file, args_base, tf): tf for tf in test_files}
             for fut in as_completed(futures):
-                tf, shard_file = futures[fut]
+                tf = futures[fut]
                 test_file, failures, err = fut.result()
                 if err is not None:
                     logger.error(f"Test file failed to execute: {test_file} error={err}")
+                    # Count as all failed (1) to surface error; adjust policy as needed
                     total_failures += 1
                 else:
                     logger.info(f"Completed: {test_file} failures={failures}")
                     total_failures += int(failures or 0)
-
-        # If we collected per-shard result files, merge and print ordered summaries now
-        if preserve and temp_result_dir:
-            merged = []
-            try:
-                for fname in sorted(os.listdir(temp_result_dir)):
-                    fpath = os.path.join(temp_result_dir, fname)
-                    try:
-                        with open(fpath, 'r') as fh:
-                            data = json.load(fh)
-                            if isinstance(data, list):
-                                merged.extend(data)
-                    except Exception:
-                        logger.debug(f"Failed to read shard result file: {fpath}")
-                # Sort merged list by orig_seq if present, else by source_file/local_index
-                def _merge_key(x):
-                    if x.get('orig_seq') is not None:
-                        return (int(x.get('orig_seq')), 0)
-                    # fallback: use source_file ordering then local_index
-                    src = x.get('source_file') or ''
-                    return (float('inf'), hash(src) + int(x.get('local_index', 0)))
-
-                for s in sorted(merged, key=_merge_key):
-                    print(f"TEST RESULT: {s.get('name')} | URL={s.get('url')} | Passed={s.get('passed')} | Response Time={s.get('response_time_ms'):.2f} ms")
-            finally:
-                try:
-                    shutil.rmtree(temp_result_dir)
-                except Exception:
-                    pass
     else:
         logger.info(f"Executing {len(test_files)} test files sequentially")
         for tf in test_files:
@@ -1227,22 +1098,10 @@ def main(args):
         raw = [s.strip() for s in str(args['tests']).split(',') if s.strip()]
         expanded = []
         for item in raw:
-            # If user escaped glob chars (e.g. "\*"), unescape them so globbing works.
-            # Common case: shell quoting with an extra backslash produced patterns like "\*.yaml"
-            item_unescaped = item.replace('\\*', '*').replace('\\?', '?').replace('\\[', '[')
-            # If the pattern contains glob meta-characters, expand it; otherwise keep literal
-            if any(ch in item_unescaped for ch in ['*', '?', '[']):
-                try:
-                    matches = glob.glob(item_unescaped)
-                    if matches:
-                        expanded.extend(matches)
-                    else:
-                        # No matches found; keep the original (unescaped) pattern so caller sees the error later
-                        expanded.append(item_unescaped)
-                except Exception:
-                    expanded.append(item_unescaped)
+            if any(ch in item for ch in ['*', '?', '[']):
+                expanded.extend(glob.glob(item))
             else:
-                expanded.append(item_unescaped)
+                expanded.append(item)
         test_list = expanded
     elif args.get('test'):
         test_list = [args['test']]

@@ -5,6 +5,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import logging
 from .retry import RetryConfig, retry_sync
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry as URLLibRetry
 
 logger = logging.getLogger('pyresttest.performance')
 
@@ -115,6 +117,20 @@ def run_performance_test(test, test_config, context, max_concurrency=None, retry
     # Track wall clock time
     wall_start = time.time()
 
+    # Ensure the requests session's connection pool is sized appropriately for
+    # the requested concurrency. Default urllib3 pool size is 10 which will
+    # cause "Connection pool is full" warnings when concurrency > 10.
+    try:
+        desired_pool = max(concurrency, 10)
+        adapter = HTTPAdapter(pool_connections=desired_pool, pool_maxsize=desired_pool)
+        # Optionally add a mild urllib3 Retry to help with transient network issues
+        # without interfering with application-level retry logic
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        logger.debug(f"Mounted HTTPAdapter with pool_maxsize={desired_pool}")
+    except Exception:
+        logger.debug("Failed to adjust session adapter pool size; continuing with default")
+
     def worker(_):
         try:
             return run_single_http_test(test, context, retry_config)
@@ -170,8 +186,10 @@ def run_performance_test(test, test_config, context, max_concurrency=None, retry
     # Only print if verbose=True (skip for warmup runs)
     if verbose:
         test_name = getattr(test, 'name', 'Unnamed')
+        method = getattr(test, 'method', 'GET')
+        url = getattr(test, 'url', '')
         print(f"\n{'='*60}")
-        print(f"[SYNC MODE] Performance Test: {test_name}")
+        print(f"[SYNC MODE] Performance Test: {test_name}  --  {method} {url}")
         print(f"{'='*60}")
         print(f"Total Requests    : {summary['total']}")
         print(f"Passed            : {summary['passed']}")

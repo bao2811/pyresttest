@@ -1,33 +1,30 @@
----
-# Example test demonstrating retry and concurrency features
+# Test Suite 2 – Content Read Operations (Posts & Likes)
 - config:
-    - testset: "Performance test with retry and concurrency"
+    variables:
+      base_url: "/"
+      # token will be injected if present
 
 - test:
-    - name: "Basic GET request"
-    - url: "/api/person/1/"
-    - method: "GET"
-    - expected_status: [200]
+    name: "Login"
+    url: "/api/login"
+    method: POST
+    headers:
+      Content-Type: application/json
+      Accept: application/json
+    body: '{"email":"1@gmail.com","password":"Bao12345"}'
+    expected_status: [200]
+    extract_binds:
+      - token: { jsonpath_mini: access_token }
 
 - test:
-    - name: "Performance test - sync mode"
-    - url: "/api/person/"
-    - method: "GET"
-    - expected_status: [200]
-    - performance:
-        repeat: 50
-        concurrency: 10
-        mode: "sync"
-        threshold_ms: 500
-
-- test:
-    - name: "Performance test - async mode"
-    - url: "/api/person/"
-    - method: "GET"
-    - expected_status: [200]
-    - performance:
-        repeat: 100
-        concurrency: 20
-        mode: "async"
-        timeout: 30
-        connect_timeout: 5
+    name: "Get All Likes"
+    url: "/api/getAllLikes"
+    method: GET
+    headers: { template: { "Authorization": "Bearer $token" } }
+    expected_status: [200, 429]
+    performance:
+      mode: sync
+      repeat: 50
+      concurrency: 5
+      threshold_ms: 300
+    output_format: json

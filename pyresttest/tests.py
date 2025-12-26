@@ -534,6 +534,20 @@ class Test(object):
                 # Performance configuration block (repeat, concurrency, mode, etc.)
                 # Store as-is for the runner to consume
                 mytest.performance = configvalue
+            elif configelement == u'retry':
+                # Allow per-test retry configuration similar to benchmarks
+                # retry can be a dict with keys: max_retries, backoff_base, backoff_max, retry_statuses
+                if isinstance(configvalue, dict):
+                    from .retry import RetryConfig
+                    max_retries = int(configvalue.get('max_retries') or 0)
+                    backoff_base = float(configvalue.get('backoff_base') or 0.5)
+                    backoff_max = float(configvalue.get('backoff_max') or 30.0)
+                    retry_statuses = configvalue.get('retry_statuses', None)
+                    if retry_statuses is not None:
+                        retry_statuses = [int(x) for x in retry_statuses]
+                    mytest.retry_config = RetryConfig(max_retries=max_retries, backoff_base=backoff_base, backoff_max=backoff_max, retry_statuses=retry_statuses)
+                else:
+                    raise TypeError('retry must be a mapping of retry settings')
             elif configelement == 'variable_binds':
                 mytest.variable_binds = flatten_dictionaries(configvalue)
             elif configelement == 'generator_binds':
